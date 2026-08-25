@@ -20,7 +20,13 @@ __all__ = ["Settings"]
 
 #: Copying is the point: the camera already encoded the video, and a NAS should
 #: not spend its CPU encoding it again.
-DEFAULT_FFMPEG_ARGS: Final = "-c copy"
+#:
+#: The audio is dropped because MIPC delivers the AAC track slowly, and ffmpeg
+#: cannot announce the stream to go2rtc until it knows what the audio is. That
+#: costs about seven seconds on every connection — enough that VLC gives up
+#: during the handshake and the camera looks dead. Put `-c copy` back if the
+#: microphone matters more than the wait.
+DEFAULT_FFMPEG_ARGS: Final = "-c copy -an"
 
 #: Profiles MIPC offers, largest first.
 PROFILES: Final = ("p0", "p1", "p2", "p3")
