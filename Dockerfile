@@ -56,7 +56,11 @@ RUN apt-get update \
 COPY --from=builder /go2rtc /usr/local/bin/go2rtc
 COPY --from=builder /opt/venv /opt/venv
 COPY docker/entrypoint.sh /usr/local/bin/entrypoint.sh
-RUN chmod +x /usr/local/bin/entrypoint.sh
+# An absolute mode, not `chmod +x`: COPY preserves the mode the file had in the
+# build context, and Container Manager uploads a folder with whatever the share
+# gave it. `+x` on a 0600 upload yields 0701, and the entrypoint runs as
+# `restream`, which then has execute but not read — fatal for a shell script.
+RUN chmod 0755 /usr/local/bin/entrypoint.sh
 
 ENV PATH="/opt/venv/bin:${PATH}" \
     MIPC_CONFIG=/config/go2rtc.yaml \
