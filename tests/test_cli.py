@@ -111,6 +111,35 @@ async def test_a_missing_overlay_is_not_an_error(
     assert target.exists()
 
 
+async def test_an_unreadable_config_volume_is_a_misconfiguration(
+    credentials: None, account: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A bind mount the container cannot read is not MIPC being unreachable.
+
+    /config belongs to whoever made the directory on the host, so uid 1000 can
+    easily be locked out of it. Exit 2 stops the container and says so; exit 1
+    would have the entrypoint keep a stale file and blame the network.
+    """
+
+    def deny(*_: object, **__: object) -> bool:
+        raise PermissionError(13, "Permission denied", "/config/go2rtc.overlay.yaml")
+
+    monkeypatch.setattr(Path, "is_file", deny)
+
+    assert (
+        await cli.async_main(
+            [
+                "config",
+                "--output",
+                str(tmp_path / "go2rtc.yaml"),
+                "--overlay",
+                "/config/go2rtc.overlay.yaml",
+            ]
+        )
+        == 2
+    )
+
+
 async def test_the_serial_filter_reaches_the_generated_configuration(
     credentials: None, account: Any, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

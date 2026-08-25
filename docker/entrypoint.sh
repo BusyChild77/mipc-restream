@@ -20,7 +20,8 @@ mipc-restream config --output "$CONFIG" --overlay "$OVERLAY" || status=$?
 
 if [ "$status" -ne 0 ]; then
     if [ "$status" -eq 2 ]; then
-        echo "ERROR mipc-restream: fix the settings in .env, then restart" >&2
+        echo "ERROR mipc-restream: fix the settings in .env, or the ownership of" >&2
+        echo "      the config volume (it must be writable by uid 1000), then restart" >&2
         exit 2
     fi
 

@@ -70,23 +70,40 @@ async def _async_discover(settings: Settings) -> int:
 
 
 async def _async_config(settings: Settings, arguments: Namespace) -> int:
-    """Generate the go2rtc configuration for the account."""
+    """Generate the go2rtc configuration for the account.
+
+    Everything touching /config is guarded, because /config is a bind mount: it
+    belongs to whoever created the directory on the host, not to the uid the
+    image sets. Letting the resulting ``PermissionError`` escape would exit 1,
+    which the entrypoint reads as MIPC being unreachable — blaming the network
+    for a chown, and keeping a stale configuration while it does.
+    """
     config = go2rtc.build(await _async_devices(settings), settings)
 
-    overlay: Path | None = arguments.overlay
-    if overlay is not None and overlay.is_file():
-        config = go2rtc.merge(config, go2rtc.parse(overlay.read_text()))
-        LOGGER.info("Applied the overlay at %s", overlay)
+    try:
+        overlay: Path | None = arguments.overlay
+        if overlay is not None and overlay.is_file():
+            config = go2rtc.merge(config, go2rtc.parse(overlay.read_text()))
+            LOGGER.info("Applied the overlay at %s", overlay)
 
-    rendered = go2rtc.render(config)
-    if arguments.output is None:
-        sys.stdout.write(rendered)
-    else:
-        arguments.output.parent.mkdir(parents=True, exist_ok=True)
-        arguments.output.write_text(rendered, encoding="utf-8")
-        LOGGER.info(
-            "Wrote %s stream(s) to %s", len(config["streams"]), arguments.output
+        rendered = go2rtc.render(config)
+        if arguments.output is None:
+            sys.stdout.write(rendered)
+        else:
+            arguments.output.parent.mkdir(parents=True, exist_ok=True)
+            arguments.output.write_text(rendered, encoding="utf-8")
+            LOGGER.info(
+                "Wrote %s stream(s) to %s", len(config["streams"]), arguments.output
+            )
+    except OSError as err:
+        LOGGER.error(
+            "Cannot use %s: %s. /config is a bind mount; it must be writable by "
+            "the uid the container runs as (1000)",
+            err.filename,
+            err.strerror,
         )
+
+        return _MISCONFIGURED
 
     return _OK
 
