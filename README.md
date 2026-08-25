@@ -39,7 +39,10 @@ the camera.
    `/volume1/docker/mipc-restream`.
 2. **Create the `.env`**: copy `.env.example` to `.env` beside `compose.yaml` and
    fill in `MIPC_USERNAME` and `MIPC_PASSWORD`. These are the same credentials
-   the MIPC phone app signs in with.
+   the MIPC phone app signs in with. **Write a `$` in the password as `$$`** —
+   Compose substitutes variables in this file before the container sees it, so
+   a lone `$` silently truncates the password and authentication fails with
+   credentials that look right.
 3. **Let the container write to `config/`.** It runs as uid 1000, and the bind
    mount hides the ownership the image sets, so the directory on the NAS has to
    be writable by that uid or the entrypoint cannot write `go2rtc.yaml`:
