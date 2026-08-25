@@ -1,0 +1,6 @@
+# Development dependencies for the restreamer.
+# The runtime requirements come from pyproject.toml via `pip install -e .`.
+pytest==8.3.4
+pytest-asyncio==0.25.2
+pytest-cov==6.0.0
+ruff==0.16.4

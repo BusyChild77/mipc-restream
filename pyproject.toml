@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mipc-restream"
+version = "1.0.0"
+description = "Publish MIPC cloud cameras as ordinary RTSP streams on the local network"
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+requires-python = ">=3.12"
+authors = [{ name = "BusyChild77" }]
+
+# mipc_client is vendored under src/ rather than installed, so its own runtime
+# requirements are repeated here. `tools/vendor.py` in the mipc-client
+# repository is what keeps that copy in step; nothing here should edit it.
+dependencies = [
+    "requests>=2.31",
+    "dukpy==0.6.0",
+    "pycryptodome==3.23.0",
+    "PyYAML>=6.0",
+]
+
+[project.scripts]
+mipc-restream = "mipc_restream.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+mipc_client = ["crypto/js/*.js"]

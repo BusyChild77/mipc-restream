@@ -1,0 +1,18 @@
+__pycache__
+*.egg-info
+build
+dist
+.pytest_cache
+.ruff_cache
+.coverage
+coverage.xml
+htmlcov
+.venv
+venv
+
+# Credentials. `.env.example` is the one that is committed.
+.env
+
+# The volume compose mounts at /config: go2rtc.yaml is regenerated at every
+# start, and go2rtc.overlay.yaml belongs to whoever deployed it.
+config/

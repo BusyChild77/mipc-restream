@@ -1,0 +1,6 @@
+[run]
+source = mipc_restream
+# `python -m mipc_restream` exists for debugging inside the container. Its only
+# statement runs under a `__name__` check that a test importing it can never
+# satisfy, and running it through runpy would execute the whole command line.
+omit = */mipc_restream/__main__.py

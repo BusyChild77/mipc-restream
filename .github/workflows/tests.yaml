@@ -1,0 +1,41 @@
+name: Tests
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  pytest:
+    runs-on: "ubuntu-latest"
+    steps:
+      - uses: "actions/checkout@v5"
+      - uses: "actions/setup-python@v6"
+        with:
+          python-version: "3.13"
+          cache: "pip"
+          cache-dependency-path: |
+            pyproject.toml
+            requirements_dev.txt
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e . -r requirements_dev.txt
+      - name: Lint
+        run: |
+          ruff check src tests
+          ruff format --check src tests
+      - name: Run the test suite
+        run: pytest
+
+  image:
+    runs-on: "ubuntu-latest"
+    steps:
+      - uses: "actions/checkout@v5"
+      # The image is most of what this project is, and it downloads a pinned
+      # go2rtc release at build time. A build that has stopped working should
+      # not be discovered on the NAS.
+      - name: Build the image
+        run: docker build -t mipc-restream:ci .
+      - name: The command runs inside it
+        run: docker run --rm --entrypoint mipc-restream mipc-restream:ci --version

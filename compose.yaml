@@ -1,0 +1,37 @@
+# Upload this folder as a Project in Synology's Container Manager, or run
+# `docker compose up -d` anywhere else. Credentials come from the `.env` file
+# beside this one — copy `.env.example` to `.env` and fill it in.
+
+services:
+  mipc-restream:
+    build: .
+    image: mipc-restream:1.0.0
+    container_name: mipc-restream
+    restart: unless-stopped
+    env_file: .env
+    ports:
+      # RTSP. This is the one Shinobi and Home Assistant read.
+      - "8554:8554/tcp"
+      # go2rtc's web UI: open http://<nas>:1984/ to see whether a stream is up.
+      - "1984:1984/tcp"
+      # WebRTC, for the low latency path in a browser or in Home Assistant.
+      - "8555:8555/tcp"
+      - "8555:8555/udp"
+    volumes:
+      # Holds the generated go2rtc.yaml, and go2rtc.overlay.yaml if you write one.
+      - ./config:/config
+    # WebRTC needs to advertise an address a browser can reach. Under bridge
+    # networking that is the NAS itself, so set MIPC_WEBRTC_CANDIDATE in .env
+    # and uncomment the overlay note in the README. Switching to
+    # `network_mode: host` removes the problem and the `ports:` block with it,
+    # at the cost of the ports no longer showing in the Container Manager UI.
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - import urllib.request; urllib.request.urlopen("http://127.0.0.1:1984/api")
+      interval: 60s
+      timeout: 10s
+      start_period: 30s
+      retries: 3

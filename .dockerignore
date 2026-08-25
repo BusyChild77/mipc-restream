@@ -1,0 +1,15 @@
+.git
+.venv
+venv
+__pycache__
+*.egg-info
+.pytest_cache
+.ruff_cache
+.coverage
+htmlcov
+tests
+.env
+compose.yaml
+
+# README.md and LICENSE are NOT ignored: pyproject.toml names them as the
+# project's readme and licence files, and the build fails without them.
