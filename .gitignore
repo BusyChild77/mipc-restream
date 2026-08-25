@@ -14,5 +14,8 @@ venv
 .env
 
 # The volume compose mounts at /config: go2rtc.yaml is regenerated at every
-# start, and go2rtc.overlay.yaml belongs to whoever deployed it.
-config/
+# start, and go2rtc.overlay.yaml belongs to whoever deployed it. The directory
+# itself is tracked, because Container Manager refuses a project whose bind
+# mount source does not exist.
+config/*
+!config/.gitkeep
