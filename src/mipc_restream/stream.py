@@ -38,6 +38,15 @@ _URL: Final = re.compile(rb"\b([a-z][a-z0-9+.-]*)://[^\s'\"]*[^\s'\".,:;!?]")
 #: of holding a monitor open on a stream that stopped arriving.
 _READ_TIMEOUT: Final = 15_000_000
 
+#: How much input ffmpeg examines before it decides what the streams are.
+#: ffmpeg's defaults are five seconds and five megabytes, which on a MIPC camera
+#: costs thirteen seconds before the first packet reaches go2rtc — the AAC track
+#: arrives slowly and ffmpeg waits for it. go2rtc holds the consumer for all of
+#: that, and VLC times out long before, so the camera looks dead on the first
+#: connection. A second is ample for h264 plus AAC, and cuts the launch to two.
+_ANALYZE_DURATION: Final = 1_000_000
+_PROBE_SIZE: Final = 500_000
+
 
 def redact(line: bytes) -> bytes:
     """Replace every URL in a line of ffmpeg output with its scheme."""
@@ -61,6 +70,12 @@ def command(url: str, output: str, settings: Settings) -> list[str]:
         "tcp",
         "-timeout",
         str(_READ_TIMEOUT),
+        "-fflags",
+        "nobuffer",
+        "-analyzeduration",
+        str(_ANALYZE_DURATION),
+        "-probesize",
+        str(_PROBE_SIZE),
         "-i",
         url,
         *settings.ffmpeg_args,

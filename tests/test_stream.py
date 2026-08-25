@@ -88,11 +88,30 @@ def test_the_command_copies_over_tcp(settings: Settings) -> None:
     command = stream.command(URL, OUTPUT, settings)
 
     assert command[0] == "ffmpeg"
-    assert command[command.index("-i") - 1] == str(15_000_000)
+    assert command[command.index("-timeout") + 1] == str(15_000_000)
     assert command[command.index("-i") + 1] == URL
     assert command[-1] == OUTPUT
     assert "-c" in command and "copy" in command
     assert command.count("-rtsp_transport") == 2
+
+
+def test_the_command_starts_without_waiting_out_ffmpeg_s_defaults(
+    settings: Settings,
+) -> None:
+    """The probe limits are what make the first connection succeed.
+
+    ffmpeg's defaults spend thirteen seconds deciding what a MIPC stream holds,
+    and go2rtc makes the consumer wait for all of it, so VLC gives up and the
+    camera looks dead. These belong before ``-i``: they describe the input.
+    """
+    command = stream.command(URL, OUTPUT, settings)
+
+    for option in ("-analyzeduration", "-probesize", "-fflags"):
+        assert command.index(option) < command.index("-i")
+
+    assert command[command.index("-analyzeduration") + 1] == str(1_000_000)
+    assert command[command.index("-probesize") + 1] == str(500_000)
+    assert command[command.index("-fflags") + 1] == "nobuffer"
 
 
 def test_the_command_takes_the_configured_ffmpeg_arguments() -> None:
