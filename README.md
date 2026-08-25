@@ -40,10 +40,18 @@ the camera.
 2. **Create the `.env`**: copy `.env.example` to `.env` beside `compose.yaml` and
    fill in `MIPC_USERNAME` and `MIPC_PASSWORD`. These are the same credentials
    the MIPC phone app signs in with.
-3. **Container Manager → Project → Create.** Point it at the folder; it will find
+3. **Let the container write to `config/`.** It runs as uid 1000, and the bind
+   mount hides the ownership the image sets, so the directory on the NAS has to
+   be writable by that uid or the entrypoint cannot write `go2rtc.yaml`:
+
+   ```sh
+   chown 1000:1000 /volume1/docker/mipc-restream/config
+   ```
+
+4. **Container Manager → Project → Create.** Point it at the folder; it will find
    `compose.yaml` and build the image. The first build takes a few minutes,
    mostly ffmpeg.
-4. **Check it came up** at `http://<nas>:1984/` — go2rtc's web UI lists every
+5. **Check it came up** at `http://<nas>:1984/` — go2rtc's web UI lists every
    stream and will play one in the browser.
 
 Each camera is then at `rtsp://<nas>:8554/<stream-name>`.
