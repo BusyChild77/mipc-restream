@@ -88,7 +88,7 @@ def test_the_command_copies_over_tcp(settings: Settings) -> None:
     command = stream.command(URL, OUTPUT, settings)
 
     assert command[0] == "ffmpeg"
-    assert command[command.index("-timeout") + 1] == str(15_000_000)
+    assert command[command.index("-timeout") + 1] == str(5_000_000)
     assert command[command.index("-i") + 1] == URL
     assert command[-1] == OUTPUT
     assert "-c" in command and "copy" in command

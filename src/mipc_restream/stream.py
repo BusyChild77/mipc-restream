@@ -36,7 +36,18 @@ _URL: Final = re.compile(rb"\b([a-z][a-z0-9+.-]*)://[^\s'\"]*[^\s'\".,:;!?]")
 
 #: Read timeout, in microseconds, so a silent upstream ends the process instead
 #: of holding a monitor open on a stream that stopped arriving.
-_READ_TIMEOUT: Final = 15_000_000
+#:
+#: It is also, unavoidably, the startup cost. ffmpeg waits out this whole
+#: timeout during RTSP setup before it decides it has seen everything MIPC is
+#: going to announce, so the first frame is never sooner than this. Measured
+#: against one camera, time to first output tracked the option almost exactly:
+#: 15s gave 15.5s, 5s gave 5.4s, and omitting it gave 17.3s. go2rtc makes the
+#: consumer wait for all of it, which is what made VLC and Shinobi give up.
+#:
+#: Five seconds is the compromise, and MIPC_READ_TIMEOUT moves it: lower starts
+#: faster but calls a stalled upstream dead sooner, and every restart is a fresh
+#: MIPC session.
+_MICROSECONDS: Final = 1_000_000
 
 #: How much input ffmpeg examines before it decides what the streams are.
 #: ffmpeg's defaults are five seconds and five megabytes, which on a MIPC camera
@@ -69,7 +80,7 @@ def command(url: str, output: str, settings: Settings) -> list[str]:
         "-rtsp_transport",
         "tcp",
         "-timeout",
-        str(_READ_TIMEOUT),
+        str(settings.read_timeout * _MICROSECONDS),
         "-fflags",
         "nobuffer",
         "-analyzeduration",

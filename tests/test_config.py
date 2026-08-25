@@ -51,6 +51,7 @@ def test_every_setting_can_be_overridden(credentials: None) -> None:
             "MIPC_SERIALS": "AAA, BBB ,",
             "MIPC_FFMPEG_ARGS": "-c:v copy -an",
             "MIPC_LOG_LEVEL": "DEBUG",
+            "MIPC_READ_TIMEOUT": "9",
         }
     )
 
@@ -60,6 +61,7 @@ def test_every_setting_can_be_overridden(credentials: None) -> None:
     assert settings.profile == "p2"
     assert settings.serials == ("AAA", "BBB")
     assert settings.ffmpeg_args == ("-c:v", "copy", "-an")
+    assert settings.read_timeout == 9
     assert settings.log_level == "debug"
 
 
@@ -81,6 +83,19 @@ def test_blank_values_fall_back_to_the_defaults(value: str) -> None:
     assert settings.profile == "p0"
     assert settings.ffmpeg_args == ("-c", "copy", "-an")
     assert settings.log_level == "info"
+
+
+@pytest.mark.parametrize("value", ["nope", "0", "-1", "1.5"])
+def test_the_read_timeout_is_checked(value: str) -> None:
+    """It is the startup delay as well as the watchdog, so a typo is costly."""
+    with pytest.raises(ConfigurationError, match="MIPC_READ_TIMEOUT"):
+        Settings.from_environment(
+            {
+                "MIPC_USERNAME": "owner@example.com",
+                "MIPC_PASSWORD": "s3cr3t",
+                "MIPC_READ_TIMEOUT": value,
+            }
+        )
 
 
 @pytest.mark.parametrize("port", ["nope", "0", "65536", "-1", "8554.5"])

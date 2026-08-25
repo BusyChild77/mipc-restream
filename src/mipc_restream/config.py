@@ -33,6 +33,10 @@ PROFILES: Final = ("p0", "p1", "p2", "p3")
 
 _DEFAULT_PORTS: Final = {"rtsp": 8554, "api": 1984, "webrtc": 8555}
 
+#: Seconds ffmpeg waits on a silent upstream. It is also the startup cost: see
+#: ``stream._READ_TIMEOUT`` for why the two cannot be separated.
+DEFAULT_READ_TIMEOUT: Final = 5
+
 
 def _port(environment: dict[str, str], name: str, default: int) -> int:
     """Read a port number, refusing anything that is not one."""
@@ -42,6 +46,18 @@ def _port(environment: dict[str, str], name: str, default: int) -> int:
 
     if not raw.isdigit() or not 1 <= int(raw) <= 65535:
         raise ConfigurationError(f"{name} is not a port number: {raw!r}")
+
+    return int(raw)
+
+
+def _seconds(environment: dict[str, str], name: str, default: int) -> int:
+    """Read a timeout in whole seconds, refusing anything that is not one."""
+    raw = environment.get(name, "").strip()
+    if not raw:
+        return default
+
+    if not raw.isdigit() or int(raw) < 1:
+        raise ConfigurationError(f"{name} is not a number of seconds: {raw!r}")
 
     return int(raw)
 
@@ -60,6 +76,9 @@ class Settings:
     serials: tuple[str, ...] = ()
     ffmpeg_args: tuple[str, ...] = tuple(split(DEFAULT_FFMPEG_ARGS))
     log_level: str = "info"
+    #: Seconds before a silent upstream is given up on, and the delay before the
+    #: first frame reaches a viewer. Lower serves faster and gives up sooner.
+    read_timeout: int = DEFAULT_READ_TIMEOUT
 
     @classmethod
     def from_environment(cls, environment: dict[str, str] | None = None) -> Settings:
@@ -93,6 +112,7 @@ class Settings:
                 split(source.get("MIPC_FFMPEG_ARGS", "").strip() or DEFAULT_FFMPEG_ARGS)
             ),
             log_level=source.get("MIPC_LOG_LEVEL", "info").strip().lower() or "info",
+            read_timeout=_seconds(source, "MIPC_READ_TIMEOUT", DEFAULT_READ_TIMEOUT),
         )
 
     @property
