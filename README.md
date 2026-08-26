@@ -104,12 +104,28 @@ Everything is an environment variable, set in `.env`. See
 | `MIPC_USERNAME`, `MIPC_PASSWORD` | — | The MIPC account. Required. |
 | `MIPC_STREAM_PROFILE` | `p0` | Which encoding to pull. `p0` is the largest, `p1`–`p3` progressively smaller. |
 | `MIPC_SERIALS` | *(all)* | Comma separated serials, to publish only some cameras. |
-| `MIPC_READ_TIMEOUT` | `5` | Seconds before a silent upstream is given up on — and the delay before the first frame, since ffmpeg waits out the whole timeout during RTSP setup and go2rtc makes the viewer wait with it. Lower it if a client gives up before the stream appears; raise it on a flaky uplink. |
-| `MIPC_FFMPEG_ARGS` | `-c copy` | What ffmpeg does with the video. The default copies it without re-encoding. Adding `-an` drops the audio and saves ~7s on every connection, because ffmpeg waits for MIPC's slow AAC track — but only if nothing downstream wants sound. Shinobi set to record audio emits `-map 0:a` and refuses to start without an audio track. |
+| `MIPC_AUDIO` | `silent` | What to do about the camera's audio. `silent` refuses MIPC's track and publishes synthesised silence in its place; `camera` fetches the real thing and pays ~7s on every connection for it; `none` publishes no audio track at all. |
+| `MIPC_READ_TIMEOUT` | `30` | Seconds before a silent upstream is given up on. A watchdog, not a startup cost — see below. Lower it only if you would rather reconnect early than sit on a stalled stream. With `MIPC_AUDIO=camera` it is the startup delay too, so keep it small there. |
+| `MIPC_FFMPEG_ARGS` | *(per audio mode)* | What ffmpeg does with the streams. Empty means the right default for the audio mode, which for `silent` includes the `-map` that keeps the silent track attached. Setting this **replaces** that default rather than adding to it. |
 
 **About the profile.** The video crosses the internet once to reach the NAS and
 is then served locally. On a domestic uplink, and with several cameras recording
 around the clock, `p1` or `p2` is often the honest choice.
+
+**About the audio, and why it decides the timeout.** MIPC announces an AAC track
+and then delivers it slowly. ffmpeg's stream probe blocks waiting for it, and
+nothing but the socket read timeout ever ends that wait — so time to first frame
+used to track `MIPC_READ_TIMEOUT` almost exactly (15s gave 15.5s, 5s gave 5.4s).
+That forced the timeout down to five seconds, which is far too short a fuse for a
+path across the internet: an ordinary relay stall killed ffmpeg, go2rtc dropped
+the consumer, and the recorder showed a black screen while a new session was
+minted.
+
+Refusing the track at the RTSP layer with `-allowed_media_types video` is what
+separates the two. The default publishes a synthesised silent track in its place,
+so a recorder set to capture sound still finds a `0:a` to map, and the timeout is
+free to be a patient watchdog. Set `MIPC_AUDIO=camera` to get the real sound back,
+and expect the slow start to return with it.
 
 ### Hand-written additions
 
@@ -143,6 +159,13 @@ a stream for days, so nothing is documented about what happens when Shinobi
 does. If the stream drops, ffmpeg exits and go2rtc starts it again with a fresh
 URL, which is the design — but expect an occasional gap in a 24/7 recording
 until you have watched it for a while.
+
+A drop is visible from both ends. In the container it is an ffmpeg error on
+`rtsp://<redacted>` followed by a new `Starting <serial> at profile p0`; in
+Shinobi it is `Process Closed` on the monitor. Recovery is not free — a login, a
+URL mint and an RTSP setup — so the black screen lasts a few seconds even when
+everything works. Frequent drops mean the read timeout is firing; that is what
+`MIPC_READ_TIMEOUT` is for.
 
 ## Security notes
 

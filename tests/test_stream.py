@@ -88,10 +88,10 @@ def test_the_command_copies_over_tcp(settings: Settings) -> None:
     command = stream.command(URL, OUTPUT, settings)
 
     assert command[0] == "ffmpeg"
-    assert command[command.index("-timeout") + 1] == str(5_000_000)
+    assert command[command.index("-timeout") + 1] == str(30_000_000)
     assert command[command.index("-i") + 1] == URL
     assert command[-1] == OUTPUT
-    assert "-c" in command and "copy" in command
+    assert command[command.index("-c:v") + 1] == "copy"
     assert command.count("-rtsp_transport") == 2
 
 
@@ -119,6 +119,57 @@ def test_the_command_takes_the_configured_ffmpeg_arguments() -> None:
     settings = Settings(username="u", password="p", ffmpeg_args=("-c:v", "h264"))
 
     assert "h264" in stream.command(URL, OUTPUT, settings)
+
+
+def test_the_camera_s_audio_is_never_negotiated_by_default(
+    settings: Settings,
+) -> None:
+    """Waiting for MIPC's AAC track is what tied startup to the read timeout.
+
+    Refusing it at the RTSP layer is what lets the timeout be a patient
+    watchdog instead of a five second fuse, so this belongs before ``-i``.
+    """
+    command = stream.command(URL, OUTPUT, settings)
+
+    assert command.index("-allowed_media_types") < command.index("-i")
+    assert command[command.index("-allowed_media_types") + 1] == "video"
+
+
+def test_a_silent_track_stands_in_for_the_audio_that_was_refused(
+    settings: Settings,
+) -> None:
+    """An NVR recording sound emits `-map 0:a` and dies without a track.
+
+    The silence is a second input, so the mapping has to be explicit: video
+    from MIPC, audio from lavfi. `-re` paces it, or it runs away from the
+    video immediately.
+    """
+    command = stream.command(URL, OUTPUT, settings)
+
+    assert command[command.index(stream._SILENCE) - 1] == "-i"
+    assert command.index("-re") < command.index(stream._SILENCE)
+    assert command.index(URL) < command.index(stream._SILENCE)
+    assert command[command.index("-map") + 1] == "0:v"
+    assert command[command.index("-map", command.index("-map") + 1) + 1] == "1:a"
+
+
+def test_the_camera_s_own_audio_can_be_asked_for() -> None:
+    """Whoever wants the real sound pays the slow start for it."""
+    settings = Settings(username="u", password="p", audio="camera")
+    command = stream.command(URL, OUTPUT, settings)
+
+    assert "-allowed_media_types" not in command
+    assert stream._SILENCE not in command
+    assert command[-7:-5] == ["-c", "copy"]
+
+
+def test_the_audio_can_be_dropped_altogether() -> None:
+    """No track at all, for whoever knows nothing downstream asks for one."""
+    settings = Settings(username="u", password="p", audio="none")
+    command = stream.command(URL, OUTPUT, settings)
+
+    assert command[command.index("-allowed_media_types") + 1] == "video"
+    assert stream._SILENCE not in command
 
 
 async def test_the_session_is_released_once_the_url_is_minted(

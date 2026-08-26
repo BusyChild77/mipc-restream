@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+from shlex import split
+
 import pytest
 
-from mipc_restream.config import Settings
+from mipc_restream.config import DEFAULT_FFMPEG_ARGS, Settings
 from mipc_restream.exceptions import ConfigurationError
 
 
@@ -19,7 +21,10 @@ def test_an_account_is_enough(credentials: None) -> None:
     assert settings.webrtc_port == 8555
     assert settings.profile == "p0"
     assert settings.serials == ()
-    assert settings.ffmpeg_args == ("-c", "copy")
+    assert settings.audio == "silent"
+    assert settings.ffmpeg_args == ()
+    assert settings.output_args[:2] == ("-map", "0:v")
+    assert settings.read_timeout == 30
     assert settings.log_level == "info"
 
 
@@ -52,6 +57,7 @@ def test_every_setting_can_be_overridden(credentials: None) -> None:
             "MIPC_FFMPEG_ARGS": "-c:v copy -an",
             "MIPC_LOG_LEVEL": "DEBUG",
             "MIPC_READ_TIMEOUT": "9",
+            "MIPC_AUDIO": "Camera",
         }
     )
 
@@ -61,6 +67,8 @@ def test_every_setting_can_be_overridden(credentials: None) -> None:
     assert settings.profile == "p2"
     assert settings.serials == ("AAA", "BBB")
     assert settings.ffmpeg_args == ("-c:v", "copy", "-an")
+    assert settings.output_args == ("-c:v", "copy", "-an")
+    assert settings.audio == "camera"
     assert settings.read_timeout == 9
     assert settings.log_level == "debug"
 
@@ -76,12 +84,14 @@ def test_blank_values_fall_back_to_the_defaults(value: str) -> None:
             "MIPC_STREAM_PROFILE": value,
             "MIPC_FFMPEG_ARGS": value,
             "MIPC_LOG_LEVEL": value,
+            "MIPC_AUDIO": value,
         }
     )
 
     assert settings.rtsp_port == 8554
     assert settings.profile == "p0"
-    assert settings.ffmpeg_args == ("-c", "copy")
+    assert settings.audio == "silent"
+    assert settings.output_args == tuple(split(DEFAULT_FFMPEG_ARGS["silent"]))
     assert settings.log_level == "info"
 
 
@@ -134,3 +144,19 @@ def test_a_serial_list_is_a_filter() -> None:
 
     assert settings.wanted("AAA")
     assert not settings.wanted("BBB")
+
+
+@pytest.mark.parametrize(
+    ("name", "value"),
+    [("MIPC_AUDIO", "loud"), ("MIPC_STREAM_PROFILE", "p9")],
+)
+def test_a_word_outside_the_set_is_refused(name: str, value: str) -> None:
+    """A typo here is silent otherwise: ffmpeg would just be told nonsense."""
+    with pytest.raises(ConfigurationError, match=name):
+        Settings.from_environment(
+            {
+                "MIPC_USERNAME": "owner@example.com",
+                "MIPC_PASSWORD": "s3cr3t",
+                name: value,
+            }
+        )

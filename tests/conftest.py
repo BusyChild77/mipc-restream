@@ -33,6 +33,8 @@ def clean_environment(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
         "MIPC_WEBRTC_PORT",
         "MIPC_FFMPEG_ARGS",
         "MIPC_LOG_LEVEL",
+        "MIPC_READ_TIMEOUT",
+        "MIPC_AUDIO",
     ):
         monkeypatch.delenv(name, raising=False)
 

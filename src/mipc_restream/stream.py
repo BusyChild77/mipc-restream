@@ -37,17 +37,23 @@ _URL: Final = re.compile(rb"\b([a-z][a-z0-9+.-]*)://[^\s'\"]*[^\s'\".,:;!?]")
 #: Read timeout, in microseconds, so a silent upstream ends the process instead
 #: of holding a monitor open on a stream that stopped arriving.
 #:
-#: It is also, unavoidably, the startup cost. ffmpeg waits out this whole
-#: timeout during RTSP setup before it decides it has seen everything MIPC is
-#: going to announce, so the first frame is never sooner than this. Measured
-#: against one camera, time to first output tracked the option almost exactly:
-#: 15s gave 15.5s, 5s gave 5.4s, and omitting it gave 17.3s. go2rtc makes the
-#: consumer wait for all of it, which is what made VLC and Shinobi give up.
+#: This used to double as the startup cost: time to first output tracked the
+#: option almost exactly — 15s gave 15.5s, 5s gave 5.4s, omitting it gave 17.3s
+#: — because ffmpeg sat in its stream probe waiting for MIPC's AAC track and
+#: only the socket timeout ever ended the wait. That forced the timeout down to
+#: five seconds, which is far too short a fuse for a path across the internet:
+#: an ordinary relay stall killed the stream, and go2rtc had to mint a new
+#: session while the recorder showed black.
 #:
-#: Five seconds is the compromise, and MIPC_READ_TIMEOUT moves it: lower starts
-#: faster but calls a stalled upstream dead sooner, and every restart is a fresh
-#: MIPC session.
+#: Refusing the audio track at the RTSP layer is what separated them, so the
+#: timeout is now only a watchdog and can afford to be patient. See
+#: ``config.AUDIO_MODES``.
 _MICROSECONDS: Final = 1_000_000
+
+#: A track of silence, so an output always has audio to offer even when the
+#: camera's own is never asked for. Mono at 16 kHz because nothing listens to
+#: it; it exists so a recorder's ``-map 0:a`` finds something.
+_SILENCE: Final = "anullsrc=channel_layout=mono:sample_rate=16000"
 
 #: How much input ffmpeg examines before it decides what the streams are.
 #: ffmpeg's defaults are five seconds and five megabytes, which on a MIPC camera
@@ -62,6 +68,33 @@ _PROBE_SIZE: Final = 500_000
 def redact(line: bytes) -> bytes:
     """Replace every URL in a line of ffmpeg output with its scheme."""
     return _URL.sub(rb"\1://<redacted>", line)
+
+
+def _accepted_media(settings: Settings) -> tuple[str, ...]:
+    """Say which of the tracks MIPC announces are worth setting up.
+
+    Refusing the audio at this layer, rather than dropping it later with
+    ``-an``, is the point: ``-an`` still negotiates the RTP session and then
+    waits for a track it is about to discard, which is the wait that used to
+    make every connection take as long as the read timeout.
+    """
+    if settings.audio == "camera":
+        return ()
+
+    return ("-allowed_media_types", "video")
+
+
+def _silence(settings: Settings) -> tuple[str, ...]:
+    """Add a second input generating silence, when one is wanted.
+
+    ``-re`` paces it at wall clock. Without it lavfi produces samples as fast
+    as the CPU allows and the silence runs hours ahead of the video within
+    seconds, which the RTSP muxer has no way to interleave.
+    """
+    if settings.audio != "silent":
+        return ()
+
+    return ("-f", "lavfi", "-re", "-i", _SILENCE)
 
 
 def command(url: str, output: str, settings: Settings) -> list[str]:
@@ -87,9 +120,11 @@ def command(url: str, output: str, settings: Settings) -> list[str]:
         str(_ANALYZE_DURATION),
         "-probesize",
         str(_PROBE_SIZE),
+        *_accepted_media(settings),
         "-i",
         url,
-        *settings.ffmpeg_args,
+        *_silence(settings),
+        *settings.output_args,
         "-rtsp_transport",
         "tcp",
         "-f",
