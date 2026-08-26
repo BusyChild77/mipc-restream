@@ -21,12 +21,13 @@ __all__ = ["Settings"]
 #: Copying is the point: the camera already encoded the video, and a NAS should
 #: not spend its CPU encoding it again.
 #:
-#: The audio is dropped because MIPC delivers the AAC track slowly, and ffmpeg
-#: cannot announce the stream to go2rtc until it knows what the audio is. That
-#: costs about seven seconds on every connection — enough that VLC gives up
-#: during the handshake and the camera looks dead. Put `-c copy` back if the
-#: microphone matters more than the wait.
-DEFAULT_FFMPEG_ARGS: Final = "-c copy -an"
+#: The audio is kept, even though MIPC delivers the AAC track slowly enough to
+#: add about seven seconds to every connection. Dropping it with `-an` is
+#: tempting and wrong as a default: an NVR configured to record sound emits
+#: `-map 0:a`, which fails outright on a stream that has no audio track —
+#: Shinobi exits immediately with "Stream map '0:a' matches no streams". A
+#: slower start is recoverable; a recorder that will not start is not.
+DEFAULT_FFMPEG_ARGS: Final = "-c copy"
 
 #: Profiles MIPC offers, largest first.
 PROFILES: Final = ("p0", "p1", "p2", "p3")

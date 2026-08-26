@@ -105,7 +105,7 @@ Everything is an environment variable, set in `.env`. See
 | `MIPC_STREAM_PROFILE` | `p0` | Which encoding to pull. `p0` is the largest, `p1`–`p3` progressively smaller. |
 | `MIPC_SERIALS` | *(all)* | Comma separated serials, to publish only some cameras. |
 | `MIPC_READ_TIMEOUT` | `5` | Seconds before a silent upstream is given up on — and the delay before the first frame, since ffmpeg waits out the whole timeout during RTSP setup and go2rtc makes the viewer wait with it. Lower it if a client gives up before the stream appears; raise it on a flaky uplink. |
-| `MIPC_FFMPEG_ARGS` | `-c copy -an` | What ffmpeg does with the video. The default copies it without re-encoding, and drops the audio: MIPC delivers its AAC track slowly enough to add ~7s to every connection, which is long enough for VLC to time out. Use `-c copy` to keep the sound. |
+| `MIPC_FFMPEG_ARGS` | `-c copy` | What ffmpeg does with the video. The default copies it without re-encoding. Adding `-an` drops the audio and saves ~7s on every connection, because ffmpeg waits for MIPC's slow AAC track — but only if nothing downstream wants sound. Shinobi set to record audio emits `-map 0:a` and refuses to start without an audio track. |
 
 **About the profile.** The video crosses the internet once to reach the NAS and
 is then served locally. On a domestic uplink, and with several cameras recording

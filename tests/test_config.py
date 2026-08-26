@@ -19,7 +19,7 @@ def test_an_account_is_enough(credentials: None) -> None:
     assert settings.webrtc_port == 8555
     assert settings.profile == "p0"
     assert settings.serials == ()
-    assert settings.ffmpeg_args == ("-c", "copy", "-an")
+    assert settings.ffmpeg_args == ("-c", "copy")
     assert settings.log_level == "info"
 
 
@@ -81,7 +81,7 @@ def test_blank_values_fall_back_to_the_defaults(value: str) -> None:
 
     assert settings.rtsp_port == 8554
     assert settings.profile == "p0"
-    assert settings.ffmpeg_args == ("-c", "copy", "-an")
+    assert settings.ffmpeg_args == ("-c", "copy")
     assert settings.log_level == "info"
 
 
