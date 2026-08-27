@@ -167,6 +167,20 @@ URL mint and an RTSP setup — so the black screen lasts a few seconds even when
 everything works. Frequent drops mean the read timeout is firing; that is what
 `MIPC_READ_TIMEOUT` is for.
 
+**`accounts.user.offline` means the account, not the password.** MIPC answers
+the login with this before it has looked at the password at all — a wrong
+password on the same account gives the identical code, while an account that
+does not exist gives `accounts.pass.invalid`. So it is never a sign that the
+credentials need fixing.
+
+A MIPC account can be an email address or a single camera's serial. On a serial,
+this code is how MIPC reports that the camera itself is not connected to its
+cloud: check the camera's power and its network, and confirm in the phone app.
+Nothing here can reach a camera MIPC cannot reach, and go2rtc will keep failing
+the stream — `error="streams: exec/rtsp ... MIPC refused: accounts.user.offline"`
+— until it comes back. On an email account the same code means the session was
+displaced by another sign-in, which signing in again fixes on its own.
+
 ## Security notes
 
 **The stream URL is a bearer token.** Anyone holding one can watch the camera

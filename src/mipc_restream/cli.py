@@ -14,8 +14,9 @@ from asyncio import run
 from collections.abc import Sequence
 from dataclasses import replace
 from pathlib import Path
+from typing import Final
 
-from mipc_client import MipcDevice, MipcError, create_client
+from mipc_client import MipcDevice, MipcError, MipcResponseError, create_client
 
 from . import __version__, go2rtc
 from .config import PROFILES, Settings
@@ -31,6 +32,18 @@ LOGGER = logging.getLogger("mipc_restream")
 _OK = 0
 _FAILED = 1
 _MISCONFIGURED = 2
+
+#: MIPC's answer when the account itself is not signed in to its cloud. It
+#: comes back from the login call, ahead of any look at the password, so it
+#: says nothing about the credentials being right or wrong.
+#:
+#: A MIPC account can be an email address or a single camera's serial — the
+#: latter is what the app offers as sharing a device. On a serial, this code
+#: is how MIPC reports that the camera is not connected to its cloud, and no
+#: number of retries reaches a camera that is not there. The client retries
+#: it anyway, because on an email account the same code means the session was
+#: displaced and signing in again is exactly the fix.
+_OFFLINE: Final = "accounts.user.offline"
 
 
 async def _async_devices(settings: Settings) -> list[MipcDevice]:
@@ -170,6 +183,14 @@ async def async_main(argv: Sequence[str] | None = None) -> int:
     except MipcError as err:
         # Never `%s` a URL: this is the layer where one could reach a log file.
         LOGGER.error("MIPC refused: %s", err)
+        if isinstance(err, MipcResponseError) and err.code == _OFFLINE:
+            LOGGER.error(
+                "MIPC reports the account as offline, which is about the account "
+                "and not the password. If MIPC_USERNAME is a camera's serial "
+                "rather than an email address, MIPC is saying that camera is not "
+                "connected to its cloud: check its power and its network. Nothing "
+                "here can reach it until MIPC can."
+            )
 
         return _FAILED
 

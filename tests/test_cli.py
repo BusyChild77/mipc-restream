@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from mipc_client import MipcConnectionError, MipcDevice
+from mipc_client import MipcConnectionError, MipcDevice, MipcSessionExpiredError
 from mipc_restream import cli, go2rtc
 
 from .conftest import OTHER_SERIAL, SERIAL
@@ -199,6 +199,18 @@ async def test_mipc_being_unreachable_is_reported_not_raised(
 
     assert await cli.async_main(["config"]) == 1
     assert "MIPC refused" in caplog.text
+
+
+async def test_an_offline_account_is_explained_not_just_quoted(
+    credentials: None, account: Any, caplog: pytest.LogCaptureFixture
+) -> None:
+    """`accounts.user.offline` twice over says nothing; a device account is why."""
+    account.async_get_devices.side_effect = MipcSessionExpiredError(
+        "accounts.user.offline", "accounts.user.offline"
+    )
+
+    assert await cli.async_main(["discover"]) == 1
+    assert "camera's serial" in caplog.text
 
 
 def test_main_runs_the_loop(credentials: None, account: Any) -> None:
