@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import Any
 from unittest.mock import AsyncMock, patch
 
@@ -151,6 +152,38 @@ def test_a_silent_track_stands_in_for_the_audio_that_was_refused(
     assert command.index(URL) < command.index(stream._SILENCE)
     assert command[command.index("-map") + 1] == "0:v"
     assert command[command.index("-map", command.index("-map") + 1) + 1] == "1:a"
+
+
+def test_the_silence_is_not_held_back_while_the_video_stalls(
+    settings: Settings,
+) -> None:
+    """The silence is what survives a stall, and only if it is let out.
+
+    go2rtc ends a stream that has sent it nothing for fifteen seconds, and
+    ffmpeg queues a sparse stream for ten before flushing it, so the default
+    leaves five seconds of margin on a stall the read timeout means to ride
+    out. This belongs after the inputs: it describes the output.
+    """
+    command = stream.command(URL, OUTPUT, settings)
+
+    assert command.index("-max_interleave_delta") > command.index(stream._SILENCE)
+    assert command[command.index("-max_interleave_delta") + 1] == str(1_000_000)
+
+
+def test_the_interleave_delta_is_left_to_an_override(settings: Settings) -> None:
+    """Whoever really means it gets the last word, as they do everywhere here.
+
+    ffmpeg takes the last occurrence of an option, so the default has to come
+    first for `MIPC_FFMPEG_ARGS` to be able to replace it.
+    """
+    settings = replace(settings, ffmpeg_args=("-max_interleave_delta", "0"))
+    command = stream.command(URL, OUTPUT, settings)
+
+    ours = command.index("-max_interleave_delta")
+    theirs = command.index("-max_interleave_delta", ours + 1)
+
+    assert command[ours + 1] == str(1_000_000)
+    assert command[theirs + 1] == "0"
 
 
 def test_the_camera_s_own_audio_can_be_asked_for() -> None:

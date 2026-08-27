@@ -60,6 +60,12 @@ _DEFAULT_PORTS: Final = {"rtsp": 8554, "api": 1984, "webrtc": 8555}
 #: and a gap the recorder shows as a black screen. It is only affordable
 #: because the audio track no longer makes this the startup cost too — see
 #: ``AUDIO_MODES``.
+#:
+#: Above fifteen seconds it only bites in ``silent`` mode. go2rtc ends a stream
+#: whose producer has sent nothing for fifteen seconds, and the silent track is
+#: the only thing still being sent while the camera's video is stalled; in
+#: ``camera`` and ``none`` there is nothing to send, so go2rtc gives up first
+#: and a larger number here never fires. See ``stream._MAX_INTERLEAVE_DELTA``.
 DEFAULT_READ_TIMEOUT: Final = 30
 
 

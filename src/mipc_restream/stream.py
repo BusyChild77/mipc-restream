@@ -55,6 +55,26 @@ _MICROSECONDS: Final = 1_000_000
 #: it; it exists so a recorder's ``-map 0:a`` finds something.
 _SILENCE: Final = "anullsrc=channel_layout=mono:sample_rate=16000"
 
+#: How long the muxer may hold a packet back to interleave it, in microseconds.
+#:
+#: go2rtc gives a producer fifteen seconds to send something and then tears the
+#: stream down. That number is hardcoded and unreachable from here: the
+#: ``?timeout=`` it reads off an ANNOUNCE is parsed only after the stream name
+#: is looked up, and an ``exec:`` source announces to a hash that is not a
+#: stream name. So fifteen seconds is a ceiling on any stall this can survive,
+#: whatever ``MIPC_READ_TIMEOUT`` says — and the symptom is go2rtc's own
+#: ``read tcp ... i/o timeout``, not anything ffmpeg prints.
+#:
+#: In ``silent`` mode there is a second input running at wall clock, and that is
+#: what keeps the connection warm while the camera's video is stalled — but only
+#: once the muxer stops queueing it. ffmpeg holds a sparse stream back for ten
+#: seconds by default, which leaves five to spare; a second leaves fourteen, and
+#: puts the read timeout back in charge of deciding when a stall is a death.
+#:
+#: It costs nothing in the other modes: with one stream the muxer always has a
+#: packet for every stream it knows about, and never queues anything at all.
+_MAX_INTERLEAVE_DELTA: Final = 1_000_000
+
 #: How much input ffmpeg examines before it decides what the streams are.
 #: ffmpeg's defaults are five seconds and five megabytes, which on a MIPC camera
 #: costs thirteen seconds before the first packet reaches go2rtc — the AAC track
@@ -124,6 +144,8 @@ def command(url: str, output: str, settings: Settings) -> list[str]:
         "-i",
         url,
         *_silence(settings),
+        "-max_interleave_delta",
+        str(_MAX_INTERLEAVE_DELTA),
         *settings.output_args,
         "-rtsp_transport",
         "tcp",

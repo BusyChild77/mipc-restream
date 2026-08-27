@@ -105,7 +105,7 @@ Everything is an environment variable, set in `.env`. See
 | `MIPC_STREAM_PROFILE` | `p0` | Which encoding to pull. `p0` is the largest, `p1`–`p3` progressively smaller. |
 | `MIPC_SERIALS` | *(all)* | Comma separated serials, to publish only some cameras. |
 | `MIPC_AUDIO` | `silent` | What to do about the camera's audio. `silent` refuses MIPC's track and publishes synthesised silence in its place; `camera` fetches the real thing and pays ~7s on every connection for it; `none` publishes no audio track at all. |
-| `MIPC_READ_TIMEOUT` | `30` | Seconds before a silent upstream is given up on. A watchdog, not a startup cost — see below. Lower it only if you would rather reconnect early than sit on a stalled stream. With `MIPC_AUDIO=camera` it is the startup delay too, so keep it small there. |
+| `MIPC_READ_TIMEOUT` | `30` | Seconds before a silent upstream is given up on. A watchdog, not a startup cost — see below. Lower it only if you would rather reconnect early than sit on a stalled stream. Above 15s it only bites with `MIPC_AUDIO=silent`; with `camera` it is the startup delay too, so keep it small there. |
 | `MIPC_FFMPEG_ARGS` | *(per audio mode)* | What ffmpeg does with the streams. Empty means the right default for the audio mode, which for `silent` includes the `-map` that keeps the silent track attached. Setting this **replaces** that default rather than adding to it. |
 
 **About the profile.** The video crosses the internet once to reach the NAS and
@@ -126,6 +126,16 @@ separates the two. The default publishes a synthesised silent track in its place
 so a recorder set to capture sound still finds a `0:a` to map, and the timeout is
 free to be a patient watchdog. Set `MIPC_AUDIO=camera` to get the real sound back,
 and expect the slow start to return with it.
+
+**go2rtc puts a ceiling of 15s on the whole thing.** It ends a stream whose
+producer has sent it nothing for fifteen seconds, and that number is hardcoded:
+the `?timeout=` it reads off an incoming stream is parsed only after the stream
+name is looked up, and an `exec:` source announces to a hash that is not one, so
+there is nothing to set. The silent track is what buys the rest of the timeout —
+it keeps arriving while the camera's video is stalled, and ffmpeg is told
+`-max_interleave_delta 1000000` so the muxer lets it out within a second instead
+of queueing it for ten. In `camera` and `none` there is nothing to send during a
+stall, so go2rtc gives up at fifteen seconds whatever `MIPC_READ_TIMEOUT` says.
 
 ### Hand-written additions
 
@@ -166,6 +176,14 @@ Shinobi it is `Process Closed` on the monitor. Recovery is not free — a login,
 URL mint and an RTSP setup — so the black screen lasts a few seconds even when
 everything works. Frequent drops mean the read timeout is firing; that is what
 `MIPC_READ_TIMEOUT` is for.
+
+A drop reported as `error="read tcp 127.0.0.1:8554->127.0.0.1:NNNNN: i/o
+timeout"` is a different one: that is go2rtc's own fifteen second ceiling, not
+the read timeout, and it means ffmpeg was still alive but had sent nothing for
+fifteen seconds. On `MIPC_AUDIO=silent` that should not happen — check the
+container is running current code rather than an older build, since Container
+Manager restarts an image it does not rebuild. If it persists, the upstream is
+stalling badly enough to be worth a smaller `MIPC_STREAM_PROFILE`.
 
 **`accounts.user.offline` means the account, not the password.** MIPC answers
 the login with this before it has looked at the password at all — a wrong
