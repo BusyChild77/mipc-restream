@@ -46,9 +46,28 @@ def test_every_camera_gets_a_stream(
     config = go2rtc.build(devices, settings)
 
     assert config["streams"] == {
-        "front_door": "exec:mipc-restream stream MIPC0000001 {output}",
-        "back_gate": "exec:mipc-restream stream MIPC0000002 {output}",
+        "front_door": (
+            "exec:mipc-restream stream MIPC0000001 {output}#killsignal=15#killtimeout=5"
+        ),
+        "back_gate": (
+            "exec:mipc-restream stream MIPC0000002 {output}#killsignal=15#killtimeout=5"
+        ),
     }
+
+
+def test_go2rtc_is_asked_to_end_a_stream_politely(
+    device: MipcDevice, settings: Settings
+) -> None:
+    """The default is a SIGKILL, and a SIGKILL here orphans an ffmpeg.
+
+    go2rtc cancels the context its command runs under, which nothing on the
+    other side can catch: the wrapper dies without passing anything on and its
+    ffmpeg keeps the MIPC session open. 15 is SIGTERM, which it can pass on.
+    """
+    source = go2rtc.build([device], settings)["streams"]["front_door"]
+
+    assert source.endswith("#killsignal=15#killtimeout=5")
+    assert source.index("{output}") < source.index("#")
 
 
 def test_an_offline_camera_is_still_published(

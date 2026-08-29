@@ -6,8 +6,13 @@ from shlex import split
 
 import pytest
 
-from mipc_restream.config import DEFAULT_FFMPEG_ARGS, Settings
+from mipc_restream.config import (
+    DEFAULT_FFMPEG_ARGS,
+    DEFAULT_STALL_TIMEOUT,
+    Settings,
+)
 from mipc_restream.exceptions import ConfigurationError
+from mipc_restream.stream import _GRACE
 
 
 def test_an_account_is_enough(credentials: None) -> None:
@@ -57,6 +62,7 @@ def test_every_setting_can_be_overridden(credentials: None) -> None:
             "MIPC_FFMPEG_ARGS": "-c:v copy -an",
             "MIPC_LOG_LEVEL": "DEBUG",
             "MIPC_READ_TIMEOUT": "9",
+            "MIPC_STALL_TIMEOUT": "6",
             "MIPC_AUDIO": "Camera",
         }
     )
@@ -70,6 +76,7 @@ def test_every_setting_can_be_overridden(credentials: None) -> None:
     assert settings.output_args == ("-c:v", "copy", "-an")
     assert settings.audio == "camera"
     assert settings.read_timeout == 9
+    assert settings.stall_timeout == 6
     assert settings.log_level == "debug"
 
 
@@ -95,17 +102,29 @@ def test_blank_values_fall_back_to_the_defaults(value: str) -> None:
     assert settings.log_level == "info"
 
 
+@pytest.mark.parametrize("name", ["MIPC_READ_TIMEOUT", "MIPC_STALL_TIMEOUT"])
 @pytest.mark.parametrize("value", ["nope", "0", "-1", "1.5"])
-def test_the_read_timeout_is_checked(value: str) -> None:
-    """It is the startup delay as well as the watchdog, so a typo is costly."""
-    with pytest.raises(ConfigurationError, match="MIPC_READ_TIMEOUT"):
+def test_the_timeouts_are_checked(name: str, value: str) -> None:
+    """A stream that never recovers is a poor way to learn about a typo."""
+    with pytest.raises(ConfigurationError, match=name):
         Settings.from_environment(
             {
                 "MIPC_USERNAME": "owner@example.com",
                 "MIPC_PASSWORD": "s3cr3t",
-                "MIPC_READ_TIMEOUT": value,
+                name: value,
             }
         )
+
+
+def test_the_whole_shutdown_fits_inside_what_go2rtc_allows() -> None:
+    """go2rtc ends a producer at fifteen seconds by SIGKILLing this process.
+
+    Noticing the stall is only the first half; ffmpeg then gets `_GRACE` to
+    close its session. Both have to happen before go2rtc gets there, because
+    its way of ending a stream leaves the ffmpeg behind, still holding the
+    camera's viewer slot.
+    """
+    assert DEFAULT_STALL_TIMEOUT + _GRACE < 15
 
 
 @pytest.mark.parametrize("port", ["nope", "0", "65536", "-1", "8554.5"])

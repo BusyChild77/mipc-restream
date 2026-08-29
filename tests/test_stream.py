@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+from asyncio import Event, Future
 from dataclasses import replace
+from signal import SIGKILL
 from typing import Any
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 
@@ -18,41 +20,93 @@ URL = "rtsp://relay.example:8554/live/MIPC0000001_p0_TOKEN"
 OUTPUT = "rtsp://127.0.0.1:8554/front_door"
 
 
-class FakeStderr:
-    """Stands in for the pipe ffmpeg writes its diagnostics to."""
+class FakePipe:
+    """Stands in for one of the pipes ffmpeg writes down.
 
-    def __init__(self, lines: list[bytes]) -> None:
-        """Keep the lines to hand out, one per iteration."""
+    A pipe that has run out of lines but whose process is still alive does not
+    return: ffmpeg keeps its end open for as long as it lives, and a watchdog
+    that only ever saw a closed pipe would never have anything to watch.
+    """
+
+    def __init__(self, lines: list[bytes], eof: bool = True) -> None:
+        """Keep the lines to hand out, and say whether the pipe then closes."""
         self._lines = list(lines)
+        self._eof = eof
+        self._closed = Event()
 
-    def __aiter__(self) -> FakeStderr:
+    def __aiter__(self) -> FakePipe:
         """Iterating the pipe is how the relay reads it."""
         return self
 
     async def __anext__(self) -> bytes:
         """Return the next line, ending when ffmpeg would have closed the pipe."""
-        if not self._lines:
+        line = await self.readline()
+        if not line:
             raise StopAsyncIteration
 
-        return self._lines.pop(0)
+        return line
+
+    async def readline(self) -> bytes:
+        """Return the next line, waiting if ffmpeg is alive and saying nothing."""
+        if self._lines:
+            return self._lines.pop(0)
+
+        if not self._eof:
+            await self._closed.wait()
+
+        return b""
+
+    def close(self) -> None:
+        """Let go of anything waiting, the way an exiting process does."""
+        self._eof = True
+        self._closed.set()
 
 
 class FakeProcess:
     """Stands in for the ffmpeg process."""
 
-    def __init__(self, lines: list[bytes] | None = None, code: int = 0) -> None:
-        """Set up what ffmpeg prints and what it exits with."""
-        self.stderr = FakeStderr(lines or [])
+    def __init__(
+        self,
+        lines: list[bytes] | None = None,
+        code: int = 0,
+        progress: list[bytes] | None = None,
+        alive: bool = False,
+        deaf: bool = False,
+    ) -> None:
+        """Set up what ffmpeg prints, what it exits with, and how it dies.
+
+        ``alive`` keeps both pipes open after the lines run out, which is what
+        a stall looks like. ``deaf`` ignores the polite signal.
+        """
+        self.stderr = FakePipe(lines or [], eof=not alive)
+        self.stdout = FakePipe(progress or [], eof=not alive)
         self.terminated = False
+        self.killed = False
         self._code = code
+        self._deaf = deaf
 
     async def wait(self) -> int:
-        """Return the exit code."""
+        """Return the exit code, or hang like an ffmpeg that ignores signals."""
+        if self._deaf and not self.killed:
+            await Future()
+
         return self._code
 
     def terminate(self) -> None:
-        """Record that a signal was passed on."""
+        """Record that a signal was passed on, and exit unless deaf to it."""
         self.terminated = True
+        if not self._deaf:
+            self._exit()
+
+    def kill(self) -> None:
+        """Record that the polite signal was not enough."""
+        self.killed = True
+        self._exit()
+
+    def _exit(self) -> None:
+        """Close both pipes, the way a process that has gone does."""
+        self.stderr.close()
+        self.stdout.close()
 
 
 @pytest.fixture
@@ -154,15 +208,15 @@ def test_a_silent_track_stands_in_for_the_audio_that_was_refused(
     assert command[command.index("-map", command.index("-map") + 1) + 1] == "1:a"
 
 
-def test_the_silence_is_not_held_back_while_the_video_stalls(
-    settings: Settings,
-) -> None:
-    """The silence is what survives a stall, and only if it is let out.
+def test_the_muxer_is_not_left_sitting_on_a_packet(settings: Settings) -> None:
+    """A second, not the ten ffmpeg holds a sparse stream back by default.
 
-    go2rtc ends a stream that has sent it nothing for fifteen seconds, and
-    ffmpeg queues a sparse stream for ten before flushing it, so the default
-    leaves five seconds of margin on a stall the read timeout means to ride
-    out. This belongs after the inputs: it describes the output.
+    This was added believing the silence would keep the connection warm through
+    a video stall. Measured against an RTSP sink, it does not: when the video
+    stops, every counter freezes within a second and nothing reaches the sink
+    at all, silence included. It stays as a bound on muxer latency, and because
+    it is the sort of thing an override wants to reach. This belongs after the
+    inputs: it describes the output.
     """
     command = stream.command(URL, OUTPUT, settings)
 
@@ -267,3 +321,141 @@ def test_terminating_a_process_that_already_died_is_harmless() -> None:
 def _raise_process_lookup() -> None:
     """Behave like a process that is already gone."""
     raise ProcessLookupError
+
+
+def test_ffmpeg_is_made_to_say_whether_anything_is_still_moving(
+    settings: Settings,
+) -> None:
+    """Nothing else ffmpeg prints tells a stalled stream from a working one.
+
+    A global option, so it sits with the other global ones and leaves the
+    output arguments — which `MIPC_FFMPEG_ARGS` replaces whole — alone.
+    """
+    command = stream.command(URL, OUTPUT, settings)
+
+    assert command[command.index("-progress") + 1] == "pipe:1"
+    assert command.index("-progress") < command.index("-i")
+
+
+async def test_a_stream_that_has_stopped_delivering_is_ended(
+    mint: Any, settings: Settings
+) -> None:
+    """The failure nothing else here could see, and the reason for all of it.
+
+    ffmpeg's read timeout is satisfied by a relay that answers keepalives, and
+    go2rtc's fifteen seconds end in a SIGKILL that orphans the ffmpeg holding
+    the MIPC session. A hundredth of a second stands in for the twelve, so the
+    test does not sit through them.
+    """
+    process = FakeProcess(progress=[b"out_time_us=1000000\n"], alive=True)
+
+    with patch.object(
+        stream, "create_subprocess_exec", AsyncMock(return_value=process)
+    ):
+        await stream.async_run(SERIAL, OUTPUT, replace(settings, stall_timeout=0.01))
+
+    assert process.terminated
+    assert not process.killed
+
+
+async def test_a_counter_that_only_follows_the_clock_is_not_delivery(
+    mint: Any, settings: Settings
+) -> None:
+    """What a stalled MIPC stream actually reports, twice a second, forever.
+
+    ffmpeg keeps talking; the only thing that changes is how far behind real
+    time it has fallen. Reading `speed` as progress would call that healthy.
+    """
+    process = FakeProcess(
+        progress=[
+            b"out_time_us=5900000\n",
+            b"speed=0.98x\n",
+            b"out_time_us=5900000\n",
+            b"speed=0.51x\n",
+        ],
+        alive=True,
+    )
+
+    with patch.object(
+        stream, "create_subprocess_exec", AsyncMock(return_value=process)
+    ):
+        await stream.async_run(SERIAL, OUTPUT, replace(settings, stall_timeout=0.01))
+
+    assert process.terminated
+
+
+async def test_a_stream_that_is_delivering_is_left_alone(
+    mint: Any, settings: Settings
+) -> None:
+    """The watchdog ends when ffmpeg does, and not for any other reason."""
+    process = FakeProcess(
+        progress=[
+            b"frame=1\n",
+            b"out_time_us=1000000\n",
+            b"progress=continue\n",
+            b"frame=26\n",
+            b"out_time_us=2000000\n",
+        ]
+    )
+
+    with patch.object(
+        stream, "create_subprocess_exec", AsyncMock(return_value=process)
+    ):
+        await stream.async_run(SERIAL, OUTPUT, settings)
+
+    assert not process.terminated
+
+
+async def test_an_ffmpeg_that_ignores_the_signal_is_killed(
+    mint: Any, settings: Settings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Politeness is for the TEARDOWN, not for the camera's viewer slot."""
+    monkeypatch.setattr(stream, "_GRACE", 0.01)
+    process = FakeProcess(progress=[b"out_time_us=1000000\n"], alive=True, deaf=True)
+
+    with patch.object(
+        stream, "create_subprocess_exec", AsyncMock(return_value=process)
+    ):
+        await stream.async_run(SERIAL, OUTPUT, replace(settings, stall_timeout=0.01))
+
+    assert process.terminated
+    assert process.killed
+
+
+async def test_ffmpeg_is_told_to_die_with_this_process(
+    mint: Any, settings: Settings
+) -> None:
+    """go2rtc's SIGKILL cannot be caught, so the kernel is asked in advance."""
+    spawn = AsyncMock(return_value=FakeProcess())
+
+    with patch.object(stream, "create_subprocess_exec", spawn):
+        await stream.async_run(SERIAL, OUTPUT, settings)
+
+    assert spawn.await_args.kwargs["preexec_fn"] is stream._die_with_parent
+
+
+def test_the_kernel_is_asked_to_end_ffmpeg_with_its_parent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An orphaned ffmpeg is a MIPC session nobody will ever close.
+
+    A SIGKILL and not a SIGTERM: this is reached only once something has
+    killed this process outright, and an ffmpeg wedged enough to get here is
+    the one that would ignore the polite signal. `_async_stop` is where a
+    TEARDOWN is asked for nicely.
+    """
+    libc = Mock()
+    monkeypatch.setattr(stream, "_LIBC", libc)
+
+    stream._die_with_parent()
+
+    libc.prctl.assert_called_once_with(stream._PR_SET_PDEATHSIG, SIGKILL)
+
+
+def test_a_kernel_that_has_no_pdeathsig_is_not_an_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The container is always Linux; whoever is running the tests may not be."""
+    monkeypatch.setattr(stream, "_LIBC", Mock(spec=[]))
+
+    stream._die_with_parent()

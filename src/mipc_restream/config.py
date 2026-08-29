@@ -52,7 +52,7 @@ PROFILES: Final = ("p0", "p1", "p2", "p3")
 
 _DEFAULT_PORTS: Final = {"rtsp": 8554, "api": 1984, "webrtc": 8555}
 
-#: Seconds ffmpeg waits on a silent upstream before giving up on it.
+#: Seconds ffmpeg waits on a silent socket before giving up on it.
 #:
 #: Thirty, not five, because this is a watchdog on a path that crosses the
 #: internet: a MIPC relay that stalls for six seconds is having a bad moment,
@@ -61,12 +61,28 @@ _DEFAULT_PORTS: Final = {"rtsp": 8554, "api": 1984, "webrtc": 8555}
 #: because the audio track no longer makes this the startup cost too — see
 #: ``AUDIO_MODES``.
 #:
-#: Above fifteen seconds it only bites in ``silent`` mode. go2rtc ends a stream
-#: whose producer has sent nothing for fifteen seconds, and the silent track is
-#: the only thing still being sent while the camera's video is stalled; in
-#: ``camera`` and ``none`` there is nothing to send, so go2rtc gives up first
-#: and a larger number here never fires. See ``stream._MAX_INTERLEAVE_DELTA``.
+#: It is a socket timeout and nothing more. MIPC's relay answers ffmpeg's RTSP
+#: keepalives whether or not the camera behind it is still sending video, so a
+#: camera that stops while the relay keeps talking never trips this at all.
+#: ``MIPC_STALL_TIMEOUT`` is the one that catches that.
 DEFAULT_READ_TIMEOUT: Final = 30
+
+#: Seconds without a delivered packet before the stream is restarted.
+#:
+#: Ten, because go2rtc gives a producer fifteen — hardcoded in
+#: ``pkg/rtsp.Conn.Handle`` for a passive producer, and unreachable from here:
+#: the ``?timeout=`` it reads off an ANNOUNCE is parsed only after the stream
+#: name is looked up, and an ``exec:`` source announces to a hash that is not a
+#: stream name. So fifteen seconds is the ceiling on any stall this can be
+#: allowed to ride out, and there is no point setting this above it.
+#:
+#: Ten rather than fourteen because noticing the stall is only the first half:
+#: ffmpeg then gets ``stream._GRACE`` seconds to close its session before it is
+#: killed, and the two together have to fit inside the fifteen. Firing first is
+#: the whole point — go2rtc acts on its own ceiling by cancelling the context
+#: this process runs under, which is a SIGKILL, while ending ffmpeg from here
+#: means it sends MIPC a TEARDOWN and the camera gets its viewer slot back.
+DEFAULT_STALL_TIMEOUT: Final = 10
 
 
 def _port(environment: dict[str, str], name: str, default: int) -> int:
@@ -124,8 +140,10 @@ class Settings:
     #: two are chosen together and a dataclass default cannot see a sibling.
     ffmpeg_args: tuple[str, ...] = ()
     log_level: str = "info"
-    #: Seconds before a silent upstream is given up on.
+    #: Seconds before a socket with nothing on it is given up on.
     read_timeout: int = DEFAULT_READ_TIMEOUT
+    #: Seconds before a stream that has stopped delivering is restarted.
+    stall_timeout: int = DEFAULT_STALL_TIMEOUT
     #: One of :data:`AUDIO_MODES`.
     audio: str = DEFAULT_AUDIO
 
@@ -154,6 +172,7 @@ class Settings:
             ffmpeg_args=tuple(split(source.get("MIPC_FFMPEG_ARGS", "").strip())),
             log_level=source.get("MIPC_LOG_LEVEL", "info").strip().lower() or "info",
             read_timeout=_seconds(source, "MIPC_READ_TIMEOUT", DEFAULT_READ_TIMEOUT),
+            stall_timeout=_seconds(source, "MIPC_STALL_TIMEOUT", DEFAULT_STALL_TIMEOUT),
             audio=_choice(source, "MIPC_AUDIO", AUDIO_MODES, DEFAULT_AUDIO),
         )
 

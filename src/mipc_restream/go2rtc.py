@@ -28,7 +28,17 @@ _UNSAFE: Final = re.compile(r"[^a-z0-9]+")
 #: How go2rtc is told to produce a stream. ``{output}`` is go2rtc's own
 #: placeholder: it substitutes the address of the RTSP server it is listening on,
 #: and the command is expected to push there.
-_SOURCE: Final = "exec:mipc-restream stream {serial} {{output}}"
+#:
+#: The fragment is go2rtc's, not a URL's, and it is split on ``#`` rather than
+#: ``&``. Without ``killsignal`` go2rtc ends a stream by cancelling the context
+#: the command runs under, which is a SIGKILL: this process never learns the
+#: stream is over, and the ffmpeg it was supervising is orphaned with MIPC still
+#: counting it as a viewer. 15 is SIGTERM, which ``stream.async_run`` passes on
+#: so ffmpeg can tear the RTSP session down; ``killtimeout`` is how long go2rtc
+#: waits before doing it the hard way anyway.
+_SOURCE: Final = (
+    "exec:mipc-restream stream {serial} {{output}}#killsignal=15#killtimeout=5"
+)
 
 
 def _slug(value: str) -> str:

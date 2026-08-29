@@ -71,7 +71,7 @@ src/mipc_client/     GENERATED copy of ../mipc-client — do not edit
 src/mipc_restream/
 ├── config.py        Settings, read from the environment and nowhere else
 ├── go2rtc.py        generating the configuration, and the overlay merge
-├── stream.py        mint one URL, run ffmpeg, redact its output
+├── stream.py        mint one URL, run ffmpeg, watch it, redact its output
 ├── cli.py           discover / config / stream
 └── exceptions.py    RestreamError, ConfigurationError
 docker/entrypoint.sh generate the config, then exec go2rtc
@@ -121,8 +121,13 @@ compose.yaml         what Container Manager reads
 
 ## Things that are still unknown
 
-- **How long a MIPC stream survives.** MIPC's own player never holds one for days.
-  ffmpeg exiting and go2rtc restarting it is the designed recovery, but nobody has
-  watched a week of it. If you learn something here, write it down in the README.
+- **How often a MIPC stream stalls, and why.** That it *does* is settled: the
+  camera stops sending while the relay keeps answering keepalives, which is why
+  `MIPC_STALL_TIMEOUT` exists. Whether it correlates with the profile, the time of
+  day or the uplink is not known. Measurements go in the README.
+- **How many sessions a camera allows before it refuses the next one.** Enough
+  leaked ffmpegs used to wedge one until it was power cycled, which is what
+  `PR_SET_PDEATHSIG` and `#killsignal=15` are there to stop. The actual limit was
+  never counted.
 - **Whether MIPC rate-limits many sessions from one account.** One connection per
   camera is what this arranges for; several accounts' worth is untested.
