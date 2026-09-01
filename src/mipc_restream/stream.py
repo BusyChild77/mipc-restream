@@ -19,6 +19,7 @@ from asyncio import (
     create_subprocess_exec,
     gather,
     get_running_loop,
+    sleep,
     wait_for,
 )
 from asyncio.subprocess import Process
@@ -28,9 +29,16 @@ from signal import SIGINT, SIGKILL, SIGTERM
 from subprocess import DEVNULL, PIPE
 from typing import Final
 
-from mipc_client import MipcClient, create_client
+from mipc_client import (
+    MipcAuthenticationError,
+    MipcClient,
+    MipcConnectionError,
+    MipcError,
+    MipcResponseError,
+    create_client,
+)
 
-from .config import Settings
+from .config import OFFLINE_CODE, Settings
 
 __all__ = ["async_run", "command", "redact"]
 
@@ -118,6 +126,25 @@ _LIBC: Final = CDLL(None, use_errno=True)
 #: go2rtc allows before it kills this process instead. See
 #: ``config.DEFAULT_STALL_TIMEOUT``.
 _GRACE: Final = 3
+
+
+#: How long one invocation may spend before ffmpeg has to be talking to go2rtc.
+#:
+#: go2rtc gives an ``exec:`` command thirty seconds to announce itself to its
+#: RTSP server and gives up on it there — ``internal/exec.handleRTSP``, a
+#: hardcoded timer with nothing configurable behind it. Every login attempt,
+#: every pause between them and ffmpeg's own two second startup have to fit
+#: inside that, so twenty is the budget and the remaining ten is margin.
+_RESOLVE_BUDGET: Final = 20
+
+#: How long to wait before minting again, doubling up to ``_MAX_PAUSE``.
+#:
+#: The client replays a recoverable failure three times of its own accord, back
+#: to back and inside about a second and a half, so this is the pause between
+#: *bursts* rather than between calls. Three seconds means a relay having a bad
+#: moment is ridden out within one connection, which the consumer never sees.
+_FIRST_PAUSE: Final = 3
+_MAX_PAUSE: Final = 8
 
 
 def redact(line: bytes) -> bytes:
@@ -223,8 +250,8 @@ def command(url: str, output: str, settings: Settings) -> list[str]:
     ]
 
 
-async def async_resolve(serial: str, settings: Settings) -> str:
-    """Ask MIPC for a URL for one camera, and let go of the session.
+async def _async_mint(serial: str, settings: Settings) -> str:
+    """Open a session, take one URL out of it, and let go of it again.
 
     The session is closed straight away on purpose. It expires seconds from now
     regardless, and holding it open for the hours the stream may last would keep
@@ -235,6 +262,80 @@ async def async_resolve(serial: str, settings: Settings) -> str:
         return await client.async_get_stream_url(serial, profile=settings.profile)
     finally:
         await client.async_close()
+
+
+def _worth_retrying(err: MipcError, settings: Settings) -> bool:
+    """Whether asking MIPC the same thing again could answer differently.
+
+    Two failures are worth nothing but the delay they would cost. Credentials
+    MIPC has just rejected will not be accepted a second later, and replaying
+    them is the one thing here that could get an account locked. And
+    ``OFFLINE_CODE`` on a device account says the camera is not connected to
+    MIPC — a state that ends when someone sees to the camera, not inside the
+    twenty seconds this has to spend. On an email account the same code means
+    the session was displaced, and asking again is precisely the fix.
+    """
+    if isinstance(err, MipcAuthenticationError):
+        return False
+
+    absent = isinstance(err, MipcResponseError) and err.code == OFFLINE_CODE
+
+    return not (absent and settings.is_device_account)
+
+
+async def _async_hold(deadline: float) -> None:
+    """Sit out the rest of the budget before admitting a failure.
+
+    Failing the moment MIPC says no reads like the honest thing to do and is
+    the opposite of it. go2rtc has no retry of its own for an ``exec:`` source,
+    so the cadence is set entirely by whatever reconnects — and a recorder
+    reconnects at once. A camera that is away for four hours then costs a login
+    every second and a half for four hours, none of which can succeed, and MIPC
+    counts every one of them against a camera that allows only a few sessions.
+    That is how an absent camera stays absent long after it came back.
+
+    This process is the only part of the path that knows the attempt failed, so
+    the brake only fits here: holding the producer slot until the budget is
+    spent paces the next attempt without anything upstream having to cooperate.
+    It stays inside go2rtc's thirty seconds so the process still ends on its own
+    terms rather than being killed for taking too long.
+    """
+    remaining = deadline - get_running_loop().time()
+    if remaining > 0:
+        LOGGER.info("Holding %.0fs before letting this connection fail", remaining)
+        await sleep(remaining)
+
+
+async def async_resolve(serial: str, settings: Settings) -> str:
+    """Ask MIPC for a URL for one camera, retrying what a retry can fix.
+
+    A blip is ridden out inside the connection, so the consumer never learns
+    there was one. A failure that no retry reaches is still not allowed to be
+    quick — see :func:`_async_hold` for what a quick failure costs.
+    """
+    loop = get_running_loop()
+    deadline = loop.time() + _RESOLVE_BUDGET
+    pause = _FIRST_PAUSE
+
+    while True:
+        try:
+            return await wait_for(_async_mint(serial, settings), deadline - loop.time())
+        except TimeoutError:
+            # MIPC being slow rather than absent is the case this catches, and
+            # it is the one that would otherwise run past go2rtc's thirty
+            # seconds and be killed there instead of ending here.
+            LOGGER.error("MIPC did not answer inside %ss", _RESOLVE_BUDGET)
+
+            raise MipcConnectionError("timed out minting a stream URL") from None
+        except MipcError as err:
+            if not _worth_retrying(err, settings) or deadline - loop.time() <= pause:
+                await _async_hold(deadline)
+
+                raise
+
+            LOGGER.warning("MIPC refused (%s); asking again in %ss", err, pause)
+            await sleep(pause)
+            pause = min(pause * 2, _MAX_PAUSE)
 
 
 async def _relay(stderr: StreamReader) -> None:

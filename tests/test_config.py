@@ -14,6 +14,8 @@ from mipc_restream.config import (
 from mipc_restream.exceptions import ConfigurationError
 from mipc_restream.stream import _GRACE
 
+from .conftest import SERIAL
+
 
 def test_an_account_is_enough(credentials: None) -> None:
     """Everything but the credentials has a working default."""
@@ -179,3 +181,13 @@ def test_a_word_outside_the_set_is_refused(name: str, value: str) -> None:
                 name: value,
             }
         )
+
+
+def test_an_address_is_an_account_shared_with_a_person() -> None:
+    """An `@` is the only thing that tells the two kinds of account apart."""
+    assert not Settings(username="owner@example.com", password="p").is_device_account
+
+
+def test_a_serial_is_a_camera_shared_as_its_own_account() -> None:
+    """Which is what makes `accounts.user.offline` mean the camera, not the session."""
+    assert Settings(username=SERIAL, password="p").is_device_account

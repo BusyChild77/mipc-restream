@@ -65,6 +65,7 @@ RUN chmod 0755 /usr/local/bin/entrypoint.sh
 ENV PATH="/opt/venv/bin:${PATH}" \
     MIPC_CONFIG=/config/go2rtc.yaml \
     MIPC_OVERLAY=/config/go2rtc.overlay.yaml \
+    MIPC_CACHE=/config/devices.json \
     PYTHONUNBUFFERED=1
 
 USER restream

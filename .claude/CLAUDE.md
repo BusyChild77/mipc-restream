@@ -74,7 +74,8 @@ src/mipc_restream/
 ├── stream.py        mint one URL, run ffmpeg, watch it, redact its output
 ├── cli.py           discover / config / stream
 └── exceptions.py    RestreamError, ConfigurationError
-docker/entrypoint.sh generate the config, then exec go2rtc
+docker/entrypoint.sh generate the config (from MIPC, or from the remembered
+                    listing in /config/devices.json), then exec go2rtc
 Dockerfile           python:3.13-slim + ffmpeg + a pinned go2rtc
 compose.yaml         what Container Manager reads
 ```
@@ -99,6 +100,15 @@ compose.yaml         what Container Manager reads
    whoever really means it.
 7. **Coverage stays at 100%.** The suite is small enough that an uncovered line means a
    behaviour nobody described.
+8. **A failed connection is never quick.** go2rtc has no retry of its own for an
+   `exec:` source, so whatever reconnects sets the pace, and a recorder reconnects
+   at once. `stream.async_resolve` holds its budget before admitting a failure;
+   removing that hold restores a login every 1.5s for as long as a camera is away,
+   which is how one stays away. The budget must stay under go2rtc's 30s ceiling on
+   a command that has not yet announced.
+9. **Never keep the previously generated `go2rtc.yaml`.** It was written by whatever
+   build last reached MIPC, so keeping it is how a fix never reaches the deployment
+   that needs it. Regenerate from `/config/devices.json` instead.
 
 ## Conventions
 
@@ -125,6 +135,10 @@ compose.yaml         what Container Manager reads
   camera stops sending while the relay keeps answering keepalives, which is why
   `MIPC_STALL_TIMEOUT` exists. Whether it correlates with the profile, the time of
   day or the uplink is not known. Measurements go in the README.
+- **Whether the hours a device account spends `accounts.user.offline` are the
+  camera's own doing or ours.** The retry storm that used to accompany them is
+  gone, so the two are finally separable: if the offline stretches shorten now,
+  they were partly self-inflicted through the camera's session table.
 - **How many sessions a camera allows before it refuses the next one.** Enough
   leaked ffmpegs used to wedge one until it was power cycled, which is what
   `PR_SET_PDEATHSIG` and `#killsignal=15` are there to stop. The actual limit was

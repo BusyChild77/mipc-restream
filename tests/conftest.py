@@ -8,6 +8,7 @@ import pytest
 
 from mipc_client import MipcDevice
 from mipc_client.crypto import runtime
+from mipc_restream import stream
 from mipc_restream.config import Settings
 
 SERIAL = "MIPC0000001"
@@ -42,10 +43,31 @@ def clean_environment(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     yield
 
 
+@pytest.fixture(autouse=True)
+def brisk(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Shrink the retry schedule so a test spends milliseconds, not the budget.
+
+    What bounds the retry is the wall clock — go2rtc is watching a real thirty
+    seconds — so the pauses stay real and only their size changes. Autouse
+    because no test wants the true schedule, and forgetting it adds twenty
+    seconds to a suite that runs in under one.
+    """
+    monkeypatch.setattr(stream, "_RESOLVE_BUDGET", 0.2)
+    monkeypatch.setattr(stream, "_FIRST_PAUSE", 0.02)
+    monkeypatch.setattr(stream, "_MAX_PAUSE", 0.05)
+
+
 @pytest.fixture
 def credentials(monkeypatch: pytest.MonkeyPatch) -> None:
     """Put a usable account in the environment."""
     monkeypatch.setenv("MIPC_USERNAME", "owner@example.com")
+    monkeypatch.setenv("MIPC_PASSWORD", "s3cr3t")
+
+
+@pytest.fixture
+def device_account(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Put a camera's own serial in the environment, the way sharing one gives it."""
+    monkeypatch.setenv("MIPC_USERNAME", SERIAL)
     monkeypatch.setenv("MIPC_PASSWORD", "s3cr3t")
 
 

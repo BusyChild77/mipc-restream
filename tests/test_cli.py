@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from json import loads
 from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, patch
@@ -10,6 +11,7 @@ import pytest
 
 from mipc_client import MipcConnectionError, MipcDevice, MipcSessionExpiredError
 from mipc_restream import cli, go2rtc
+from mipc_restream.config import OFFLINE_CODE
 
 from .conftest import OTHER_SERIAL, SERIAL
 
@@ -201,16 +203,150 @@ async def test_mipc_being_unreachable_is_reported_not_raised(
     assert "MIPC refused" in caplog.text
 
 
-async def test_an_offline_account_is_explained_not_just_quoted(
-    credentials: None, account: Any, caplog: pytest.LogCaptureFixture
+async def test_an_offline_device_account_is_explained_as_the_camera(
+    device_account: None, account: Any, caplog: pytest.LogCaptureFixture
 ) -> None:
     """`accounts.user.offline` twice over says nothing; a device account is why."""
     account.async_get_devices.side_effect = MipcSessionExpiredError(
-        "accounts.user.offline", "accounts.user.offline"
+        OFFLINE_CODE, OFFLINE_CODE
     )
 
     assert await cli.async_main(["discover"]) == 1
     assert "camera's serial" in caplog.text
+
+
+async def test_an_offline_email_account_is_explained_as_the_session(
+    credentials: None, account: Any, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The identical code on an address means a sign-in displaced this session."""
+    account.async_get_devices.side_effect = MipcSessionExpiredError(
+        OFFLINE_CODE, OFFLINE_CODE
+    )
+
+    assert await cli.async_main(["discover"]) == 1
+    assert "displaced" in caplog.text
+    assert "camera's serial" not in caplog.text
+
+
+async def test_the_camera_list_is_remembered_for_a_start_mipc_is_away_for(
+    credentials: None, account: Any, tmp_path: Path
+) -> None:
+    """The listing is the only part of a configuration that needs MIPC at all."""
+    cache = tmp_path / "devices.json"
+
+    assert await cli.async_main(["config", "--cache", str(cache)]) == 0
+    assert {entry["serial"] for entry in loads(cache.read_text())} == {
+        SERIAL,
+        OTHER_SERIAL,
+    }
+
+
+async def test_a_configuration_is_generated_from_the_cameras_last_seen(
+    credentials: None, account: Any, tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A boot while the camera is away must still write a current configuration.
+
+    Keeping the previous file instead is how a fix to the stream command never
+    reaches the deployment whose camera is away at every boot.
+    """
+    cache = tmp_path / "devices.json"
+    target = tmp_path / "go2rtc.yaml"
+    await cli.async_main(["config", "--cache", str(cache)])
+
+    account.async_get_devices.side_effect = MipcConnectionError("down")
+    assert (
+        await cli.async_main(["config", "--output", str(target), "--cache", str(cache)])
+        == 0
+    )
+
+    streams = go2rtc.parse(target.read_text())["streams"]
+    assert set(streams) == {"front_door", "back_gate"}
+    assert "killsignal=15" in streams["front_door"]
+    assert "last seen" in caplog.text
+
+
+async def test_the_first_start_after_a_fix_regenerates_what_is_already_there(
+    credentials: None, account: Any, tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """No cache yet, MIPC away — the case a fix has to survive to be deployed at all.
+
+    The old file is read for the cameras it publishes and written again by this
+    build, so a change to the stream command reaches a deployment whose camera
+    is away at every boot.
+    """
+    target = tmp_path / "go2rtc.yaml"
+    target.write_text(
+        f"streams:\n  front_door: exec:mipc-restream stream {SERIAL} {{output}}\n"
+    )
+    account.async_get_devices.side_effect = MipcConnectionError("down")
+
+    assert (
+        await cli.async_main(
+            ["config", "--output", str(target), "--cache", str(tmp_path / "none.json")]
+        )
+        == 0
+    )
+
+    streams = go2rtc.parse(target.read_text())["streams"]
+    assert list(streams) == ["front_door"]
+    assert "killsignal=15" in streams["front_door"]
+
+
+async def test_an_unreadable_configuration_is_not_read_back(
+    credentials: None, account: Any, tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A half written file must not be the reason the container will not start."""
+    target = tmp_path / "go2rtc.yaml"
+    target.write_text("streams: [unclosed\n")
+    account.async_get_devices.side_effect = MipcConnectionError("down")
+
+    assert await cli.async_main(["config", "--output", str(target)]) == 1
+    assert "unreadable configuration" in caplog.text
+
+
+async def test_a_cache_that_has_never_been_written_is_not_a_configuration(
+    credentials: None, account: Any, tmp_path: Path
+) -> None:
+    """The first boot of all still has nothing to say, and says so."""
+    account.async_get_devices.side_effect = MipcConnectionError("down")
+
+    assert (
+        await cli.async_main(["config", "--cache", str(tmp_path / "devices.json")]) == 1
+    )
+
+
+async def test_an_unusable_cache_is_ignored_rather_than_fatal(
+    credentials: None, account: Any, tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A truncated write must not be the reason the container will not start."""
+    cache = tmp_path / "devices.json"
+    cache.write_text("[{'not': 'json'}")
+    account.async_get_devices.side_effect = MipcConnectionError("down")
+
+    assert await cli.async_main(["config", "--cache", str(cache)]) == 1
+    assert "unusable camera cache" in caplog.text
+
+
+async def test_a_cache_that_cannot_be_written_is_not_fatal_either(
+    credentials: None, account: Any, tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """MIPC answered, so the configuration being written is the better source."""
+    unwritable = tmp_path / "denied"
+    unwritable.mkdir(mode=0o500)
+
+    assert (
+        await cli.async_main(["config", "--cache", str(unwritable / "devices.json")])
+        == 0
+    )
+    assert "Could not write the camera cache" in caplog.text
+
+
+async def test_no_cache_asked_for_means_none_is_kept(
+    credentials: None, account: Any, tmp_path: Path
+) -> None:
+    """`config` printed by hand should not leave a file behind."""
+    assert await cli.async_main(["config"]) == 0
+    assert list(tmp_path.iterdir()) == []
 
 
 def test_main_runs_the_loop(credentials: None, account: Any) -> None:

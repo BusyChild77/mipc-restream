@@ -84,6 +84,15 @@ DEFAULT_READ_TIMEOUT: Final = 30
 #: means it sends MIPC a TEARDOWN and the camera gets its viewer slot back.
 DEFAULT_STALL_TIMEOUT: Final = 10
 
+#: MIPC's answer when the account itself is not signed in to its cloud. It comes
+#: back from the login call, ahead of any look at the password, so it says
+#: nothing about the credentials being right or wrong.
+#:
+#: What it *does* say depends on what the account is, which is why it lives here
+#: rather than beside the rest of the MIPC vocabulary: it is only readable next
+#: to :meth:`Settings.is_device_account`.
+OFFLINE_CODE: Final = "accounts.user.offline"
+
 
 def _port(environment: dict[str, str], name: str, default: int) -> int:
     """Read a port number, refusing anything that is not one."""
@@ -180,6 +189,23 @@ class Settings:
     def credentials(self) -> MipcCredentials:
         """The account to authenticate with."""
         return MipcCredentials(self.username, self.password)
+
+    @property
+    def is_device_account(self) -> bool:
+        """Whether the account is one camera's serial rather than an email address.
+
+        MIPC lets a single camera be shared as an account of its own, and the
+        two read :data:`OFFLINE_CODE` in opposite ways. On an address it means
+        another sign-in displaced this session, and signing in again is exactly
+        the fix. On a serial it means the camera is not connected to MIPC at
+        all, and no amount of asking reaches a camera that is not there — which
+        is the difference between a retry that is worth making and one that
+        only spends the camera's session slots.
+
+        An address is the only thing MIPC accepts that can contain an ``@``, so
+        that is the whole test.
+        """
+        return "@" not in self.username
 
     @property
     def output_args(self) -> tuple[str, ...]:

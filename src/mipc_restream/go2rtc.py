@@ -20,7 +20,7 @@ from mipc_client import MipcDevice
 
 from .config import Settings
 
-__all__ = ["build", "merge", "parse", "render", "stream_name"]
+__all__ = ["build", "merge", "parse", "published", "render", "stream_name"]
 
 #: Anything outside this is replaced, so a stream name is safe in a URL path.
 _UNSAFE: Final = re.compile(r"[^a-z0-9]+")
@@ -39,6 +39,30 @@ _UNSAFE: Final = re.compile(r"[^a-z0-9]+")
 _SOURCE: Final = (
     "exec:mipc-restream stream {serial} {{output}}#killsignal=15#killtimeout=5"
 )
+
+
+#: The serial in a source this module wrote. Narrow on purpose: an overlay's
+#: hand written stream, or a camera that is not on the account, is not ours to
+#: read back.
+_PUBLISHED: Final = re.compile(r"^exec:mipc-restream stream (\S+) ")
+
+
+def published(config: Mapping[str, Any]) -> dict[str, str]:
+    """Read back which camera a generated configuration serves under which name.
+
+    The inverse of what :func:`build` writes, and the last thing a start that
+    cannot reach MIPC can fall back on. The stream name is carried out along
+    with the serial because it is what consumers have been pointed at: losing
+    it would rename every monitor in the recorder, which is a worse failure
+    than the one this is recovering from.
+    """
+    found: dict[str, str] = {}
+    for name, source in config.get("streams", {}).items():
+        match = _PUBLISHED.match(source) if isinstance(source, str) else None
+        if match is not None:
+            found[name] = match[1]
+
+    return found
 
 
 def _slug(value: str) -> str:

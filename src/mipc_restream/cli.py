@@ -11,15 +11,18 @@ import logging
 import sys
 from argparse import ArgumentParser, Namespace
 from asyncio import run
-from collections.abc import Sequence
+from collections.abc import Iterable, Sequence
 from dataclasses import replace
+from json import dumps, loads
 from pathlib import Path
 from typing import Final
+
+from yaml import YAMLError
 
 from mipc_client import MipcDevice, MipcError, MipcResponseError, create_client
 
 from . import __version__, go2rtc
-from .config import PROFILES, Settings
+from .config import OFFLINE_CODE, PROFILES, Settings
 from .exceptions import RestreamError
 from .stream import async_run
 
@@ -33,17 +36,89 @@ _OK = 0
 _FAILED = 1
 _MISCONFIGURED = 2
 
-#: MIPC's answer when the account itself is not signed in to its cloud. It
-#: comes back from the login call, ahead of any look at the password, so it
-#: says nothing about the credentials being right or wrong.
-#:
-#: A MIPC account can be an email address or a single camera's serial — the
-#: latter is what the app offers as sharing a device. On a serial, this code
-#: is how MIPC reports that the camera is not connected to its cloud, and no
-#: number of retries reaches a camera that is not there. The client retries
-#: it anyway, because on an email account the same code means the session was
-#: displaced and signing in again is exactly the fix.
-_OFFLINE: Final = "accounts.user.offline"
+#: What the cache keeps about a camera. Not its status: that is true of the
+#: moment it was written and stale by the time it is read, and ``go2rtc.build``
+#: publishes an offline camera regardless.
+_CACHED: Final = ("serial", "name")
+
+
+def _remember(devices: Iterable[MipcDevice], path: Path | None) -> None:
+    """Write down what the account holds, for a start MIPC is not there for."""
+    if path is None:
+        return
+
+    listing = [{field: getattr(d, field) for field in _CACHED} for d in devices]
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(dumps(listing, indent=2), encoding="utf-8")
+    except OSError as err:
+        # Never fatal. The configuration this was meant to help write has just
+        # been generated from MIPC itself, which is the better source anyway.
+        LOGGER.warning("Could not write the camera cache at %s: %s", path, err)
+
+
+def _cached(path: Path | None) -> list[MipcDevice]:
+    """Read back the cameras last seen, or nothing if there is no usable record."""
+    if path is None or not path.is_file():
+        return []
+
+    try:
+        return [
+            MipcDevice(serial=entry["serial"], name=entry["name"], online=False)
+            for entry in loads(path.read_text(encoding="utf-8"))
+        ]
+    except (OSError, ValueError, TypeError, KeyError) as err:
+        LOGGER.warning("Ignoring the unusable camera cache at %s: %s", path, err)
+
+        return []
+
+
+def _previously(path: Path | None) -> list[MipcDevice]:
+    """Read the cameras back out of a configuration an earlier start wrote.
+
+    The last resort, and the one that matters on the first start after a fix:
+    a deployment that has never once reached MIPC has no cache to fall back on,
+    and on a device account that is exactly the deployment whose camera was
+    away every time it tried. Keeping the old file instead would mean the fix
+    never runs; reading the cameras out of it and generating again means it
+    does.
+
+    The stream name is taken from the file rather than derived, so the recorder
+    keeps the addresses it was pointed at. MIPC's nickname is lost until MIPC
+    answers again, which only matters if a camera was renamed meanwhile.
+    """
+    if path is None or not path.is_file():
+        return []
+
+    try:
+        serving = go2rtc.published(go2rtc.parse(path.read_text(encoding="utf-8")))
+    except (OSError, YAMLError) as err:
+        LOGGER.warning("Ignoring the unreadable configuration at %s: %s", path, err)
+
+        return []
+
+    return [
+        MipcDevice(serial=serial, name=name, online=False)
+        for name, serial in serving.items()
+    ]
+
+
+def _offline_advice(settings: Settings) -> str:
+    """Say what MIPC means by an offline account, for this kind of account."""
+    if settings.is_device_account:
+        return (
+            "MIPC_USERNAME is a camera's serial rather than an email address, so "
+            "MIPC is saying that camera is not connected to its cloud: check its "
+            "power and its network, and confirm in the phone app. Nothing here "
+            "reaches a camera MIPC cannot reach, and asking faster only spends "
+            "the few session slots it has for when it does come back."
+        )
+
+    return (
+        "MIPC reports the account as offline, which is about the account and not "
+        "the password: another sign-in displaced this session, and signing in "
+        "again is the fix."
+    )
 
 
 async def _async_devices(settings: Settings) -> list[MipcDevice]:
@@ -82,6 +157,44 @@ async def _async_discover(settings: Settings) -> int:
     return _OK
 
 
+async def _async_known(
+    settings: Settings, cache: Path | None, previous: Path | None
+) -> list[MipcDevice]:
+    """List the cameras, falling back to the ones last seen.
+
+    A configuration has to be generated even when MIPC will not say what the
+    account holds, and it has to be generated by *this* build. Keeping the file
+    that is already there looks like the same thing and is not: that file was
+    written by whichever version last managed to reach MIPC, so a fix to how a
+    stream is invoked never reaches the one deployment that needs it — the one
+    whose camera is away at every boot, which on a device account is exactly
+    the deployment that has been failing.
+
+    Publishing a camera that is not answering costs nothing. go2rtc pulls from
+    MIPC only when a consumer connects, so an absent camera costs the one
+    stream that fails and no other.
+    """
+    try:
+        devices = await _async_devices(settings)
+    except MipcError as err:
+        remembered = _cached(cache) or _previously(previous)
+        if not remembered:
+            raise
+
+        LOGGER.warning(
+            "MIPC would not say what the account holds (%s); generating from "
+            "the %s camera(s) last seen instead",
+            err,
+            len(remembered),
+        )
+
+        return remembered
+
+    _remember(devices, cache)
+
+    return devices
+
+
 async def _async_config(settings: Settings, arguments: Namespace) -> int:
     """Generate the go2rtc configuration for the account.
 
@@ -91,7 +204,8 @@ async def _async_config(settings: Settings, arguments: Namespace) -> int:
     which the entrypoint reads as MIPC being unreachable — blaming the network
     for a chown, and keeping a stale configuration while it does.
     """
-    config = go2rtc.build(await _async_devices(settings), settings)
+    known = await _async_known(settings, arguments.cache, arguments.output)
+    config = go2rtc.build(known, settings)
 
     try:
         overlay: Path | None = arguments.overlay
@@ -149,6 +263,12 @@ def parse(argv: Sequence[str] | None = None) -> Namespace:
         default=None,
         help="YAML laid over the generated configuration, if it exists",
     )
+    config.add_argument(
+        "--cache",
+        type=Path,
+        default=None,
+        help="remember the camera list here, to generate when MIPC is away",
+    )
 
     stream = commands.add_parser("stream", help="what go2rtc runs; not for humans")
     stream.add_argument("serial", help="serial number of the camera")
@@ -183,14 +303,8 @@ async def async_main(argv: Sequence[str] | None = None) -> int:
     except MipcError as err:
         # Never `%s` a URL: this is the layer where one could reach a log file.
         LOGGER.error("MIPC refused: %s", err)
-        if isinstance(err, MipcResponseError) and err.code == _OFFLINE:
-            LOGGER.error(
-                "MIPC reports the account as offline, which is about the account "
-                "and not the password. If MIPC_USERNAME is a camera's serial "
-                "rather than an email address, MIPC is saying that camera is not "
-                "connected to its cloud: check its power and its network. Nothing "
-                "here can reach it until MIPC can."
-            )
+        if isinstance(err, MipcResponseError) and err.code == OFFLINE_CODE:
+            LOGGER.error("%s", _offline_advice(settings))
 
         return _FAILED
 

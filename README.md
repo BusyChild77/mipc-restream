@@ -108,6 +108,7 @@ Everything is an environment variable, set in `.env`. See
 | `MIPC_READ_TIMEOUT` | `30` | Seconds before a **socket** with nothing on it is given up on. Only that: MIPC's relay answers ffmpeg's keepalives whether or not the camera behind it is still sending, so this never fires on a camera that has simply stopped. With `MIPC_AUDIO=camera` it is the startup delay too, so keep it small there. |
 | `MIPC_STALL_TIMEOUT` | `10` | Seconds without a **delivered packet** before the stream is restarted. This is the watchdog that catches a camera that has gone quiet with its connection still up. Do not raise it past 11: ffmpeg gets three more seconds to close its session, and the two together have to happen before go2rtc's 15s ceiling, described below. |
 | `MIPC_FFMPEG_ARGS` | *(per audio mode)* | What ffmpeg does with the streams. Empty means the right default for the audio mode, which for `silent` includes the `-map` that keeps the silent track attached. Setting this **replaces** that default rather than adding to it. |
+| `MIPC_CONFIG_ATTEMPTS`, `MIPC_CONFIG_RETRY_DELAY` | `3`, `10` | How many times the entrypoint asks MIPC what the account holds at boot, and the seconds between asking. Only the very first boot depends on it; after that the listing is remembered. |
 
 **About the profile.** The video crosses the internet once to reach the NAS and
 is then served locally. On a domestic uplink, and with several cameras recording
@@ -162,10 +163,53 @@ go2rtc for `#killsignal=15` so the signal can be passed on, and ffmpeg is
 started with `PR_SET_PDEATHSIG` so the kernel ends it even when this process is
 killed outright.
 
+**About a failure that will not be hurried.** MIPC refuses for hours at a time
+when the account is a camera's own serial and the camera is away. go2rtc has no
+retry of its own for an `exec:` source, so the pace of the retrying is set
+entirely by whatever reconnects — and a recorder reconnects the instant it is
+dropped. Failing the moment MIPC says no therefore turns one absent camera into
+a login every second and a half, for as long as it is absent: none of them can
+succeed, and MIPC counts every one against the few sessions the camera has for
+when it comes back. That is how an absent camera stayed absent long after it
+had returned, and why restarting the container appeared to change nothing.
+
+So a connection that cannot be made takes its time failing. `mipc-restream
+stream` retries what a retry can reach — a relay having a bad moment is ridden
+out inside the connection and the recorder never sees it — and then holds the
+producer slot until a twenty second budget is spent before admitting the
+failure. `Holding 19s before letting this connection fail` in the log is that,
+working. Twenty rather than more because go2rtc gives the command thirty
+seconds to announce itself and kills it there; the process ends on its own
+terms with margin to spare.
+
+Two failures are not retried at all, only held: credentials MIPC has just
+rejected, because replaying those is the one thing here that could lock an
+account, and `accounts.user.offline` on a device account, because that camera
+comes back when someone sees to it and not on the next attempt.
+
+**About a restart that changes nothing.** `go2rtc.yaml` is generated at every
+start, but generating it needs MIPC to say what the account holds — and on a
+device account whose camera is away, MIPC will not. The previous file used to
+be kept when that happened, which sounds harmless and is not: that file was
+written by whichever build last reached MIPC, so a fix to how a stream is
+invoked never reached the one deployment that needed it. Rebuilding the project
+genuinely did nothing.
+
+The camera listing is now remembered in `config/devices.json` whenever MIPC
+does answer, and a start that cannot reach MIPC regenerates the configuration
+from that record — with the code running now. Only the very first start of all
+still depends on MIPC being there. Look for `MIPC would not say what the
+account holds ...; generating from the 1 camera(s) last seen instead`.
+
+Publishing a camera that is not answering costs nothing: go2rtc pulls from MIPC
+only when a consumer connects, so an absent camera costs the one stream that
+fails and no other.
+
 ### Hand-written additions
 
 `go2rtc.yaml` is regenerated at every start — that is how a camera renamed in
-the MIPC app gets picked up. Anything you want to add by hand goes in
+the MIPC app gets picked up, and how a fix to the stream command reaches a
+running deployment. Anything you want to add by hand goes in
 `config/go2rtc.overlay.yaml` instead, which is merged over the generated file,
 key by key:
 
@@ -183,8 +227,10 @@ streams:
 
 **Startup.** The container asks MIPC what cameras exist, writes `go2rtc.yaml`
 and starts go2rtc. If MIPC is unreachable at that moment — an internet link that
-comes up after the NAS does — the previous `go2rtc.yaml` is kept rather than the
-recorder losing every monitor.
+comes up after the NAS does, or a device account whose camera is away — it asks
+a few more times and then generates the same configuration from the camera
+listing it remembered last time, rather than the recorder losing every monitor.
+Only a first start that has never reached MIPC has nothing to work from.
 
 **Idle cost is zero.** Nothing is pulled from MIPC until something connects. A
 camera nobody is watching costs nothing.
@@ -232,8 +278,10 @@ this code is how MIPC reports that the camera itself is not connected to its
 cloud: check the camera's power and its network, and confirm in the phone app.
 Nothing here can reach a camera MIPC cannot reach, and go2rtc will keep failing
 the stream — `error="streams: exec/rtsp ... MIPC refused: accounts.user.offline"`
-— until it comes back. On an email account the same code means the session was
-displaced by another sign-in, which signing in again fixes on its own.
+— until it comes back, now at one attempt every twenty seconds rather than one
+every second and a half. On an email account the same code means the session was
+displaced by another sign-in, which signing in again fixes on its own, and which
+is retried inside the connection accordingly.
 
 ## Security notes
 

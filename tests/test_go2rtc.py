@@ -132,3 +132,40 @@ def test_a_rendered_configuration_reads_back(
 def test_an_empty_overlay_is_an_empty_overlay(text: str) -> None:
     """A commented out overlay file must not blow up the entrypoint."""
     assert go2rtc.parse(text) == {}
+
+
+def test_a_generated_configuration_reads_back_to_what_it_publishes(
+    devices: list[MipcDevice], settings: Settings
+) -> None:
+    """A start that cannot reach MIPC regenerates from this, so it must round trip."""
+    config = go2rtc.build(devices, settings)
+
+    assert go2rtc.published(config) == {
+        "front_door": SERIAL,
+        "back_gate": OTHER_SERIAL,
+    }
+
+
+def test_the_names_survive_the_round_trip(
+    devices: list[MipcDevice], settings: Settings
+) -> None:
+    """Losing them would rename every monitor in the recorder."""
+    config = go2rtc.build(devices, settings)
+    read_back = [
+        MipcDevice(serial=serial, name=name, online=False)
+        for name, serial in go2rtc.published(config).items()
+    ]
+
+    assert go2rtc.build(read_back, settings) == config
+
+
+def test_a_stream_this_did_not_write_is_not_claimed(settings: Settings) -> None:
+    """An overlay's own camera is not on the account and must not be read back."""
+    config = {
+        "streams": {
+            "doorbell": "rtsp://192.168.1.50/stream1",
+            "several": ["exec:mipc-restream stream AAA {output}"],
+        }
+    }
+
+    assert go2rtc.published(config) == {}

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from asyncio import Event, Future
+from asyncio import Event, Future, get_running_loop, sleep
 from dataclasses import replace
 from signal import SIGKILL
 from typing import Any
@@ -10,9 +10,13 @@ from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 
-from mipc_client import MipcConnectionError
+from mipc_client import (
+    MipcAuthenticationError,
+    MipcConnectionError,
+    MipcSessionExpiredError,
+)
 from mipc_restream import stream
-from mipc_restream.config import Settings
+from mipc_restream.config import OFFLINE_CODE, Settings
 
 from .conftest import SERIAL
 
@@ -272,13 +276,121 @@ async def test_the_session_is_released_once_the_url_is_minted(
 async def test_the_session_is_released_even_when_mipc_refuses(
     mint: Any, settings: Settings
 ) -> None:
-    """A failure must not leak the connection it failed on."""
+    """A failure must not leak the connection it failed on, on any attempt."""
     mint.async_get_stream_url.side_effect = MipcConnectionError("down")
 
     with pytest.raises(MipcConnectionError):
         await stream.async_resolve(SERIAL, settings)
 
-    mint.async_close.assert_awaited_once()
+    assert mint.async_close.await_count == mint.async_get_stream_url.await_count
+
+
+async def test_a_blip_is_ridden_out_inside_the_connection(
+    mint: Any, settings: Settings
+) -> None:
+    """A relay having a bad moment should never reach the recorder as a drop."""
+    mint.async_get_stream_url.side_effect = [MipcConnectionError("down"), URL]
+
+    assert await stream.async_resolve(SERIAL, settings) == URL
+    assert mint.async_get_stream_url.await_count == 2
+
+
+async def test_a_camera_that_is_not_there_is_asked_once(
+    mint: Any, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A camera off MIPC's cloud comes back when someone sees to it, not on a retry.
+
+    Asking again inside one connection cannot help, and every ask spends one of
+    the few sessions the camera has for when it does return.
+    """
+    caplog.set_level("INFO")
+    settings = Settings(username=SERIAL, password="p")
+    mint.async_get_stream_url.side_effect = MipcSessionExpiredError(OFFLINE_CODE)
+
+    with pytest.raises(MipcSessionExpiredError):
+        await stream.async_resolve(SERIAL, settings)
+
+    assert mint.async_get_stream_url.await_count == 1
+    assert "Holding" in caplog.text
+
+
+async def test_a_displaced_session_is_asked_again(
+    mint: Any, settings: Settings
+) -> None:
+    """The identical code on an email account means signing in again is the fix."""
+    mint.async_get_stream_url.side_effect = [
+        MipcSessionExpiredError(OFFLINE_CODE),
+        URL,
+    ]
+
+    assert await stream.async_resolve(SERIAL, settings) == URL
+
+
+async def test_credentials_mipc_has_rejected_are_not_replayed(
+    mint: Any, settings: Settings
+) -> None:
+    """Replaying a rejected password could lock the account; nothing else here can."""
+    mint.async_get_stream_url.side_effect = MipcAuthenticationError(
+        "accounts.pass.invalid"
+    )
+
+    with pytest.raises(MipcAuthenticationError):
+        await stream.async_resolve(SERIAL, settings)
+
+    assert mint.async_get_stream_url.await_count == 1
+
+
+async def test_a_failure_is_never_quick(mint: Any, settings: Settings) -> None:
+    """Failing at once is what turns one absent camera into a login every second.
+
+    go2rtc does not pace an `exec:` source it has no retry for, so the cadence
+    is whatever reconnects — and a recorder reconnects immediately. Holding the
+    budget is the only brake on the path.
+    """
+    mint.async_get_stream_url.side_effect = MipcAuthenticationError(
+        "accounts.pass.invalid"
+    )
+    loop = get_running_loop()
+
+    started = loop.time()
+    with pytest.raises(MipcAuthenticationError):
+        await stream.async_resolve(SERIAL, settings)
+
+    assert loop.time() - started >= stream._RESOLVE_BUDGET
+
+
+async def test_a_mipc_that_answers_too_slowly_ends_here_not_at_go2rtc(
+    mint: Any, settings: Settings
+) -> None:
+    """The command has thirty seconds to announce, however long MIPC takes."""
+
+    async def never(*_: object, **__: object) -> str:
+        await sleep(stream._RESOLVE_BUDGET * 10)
+
+        return URL
+
+    mint.async_get_stream_url.side_effect = never
+    loop = get_running_loop()
+
+    started = loop.time()
+    with pytest.raises(MipcConnectionError):
+        await stream.async_resolve(SERIAL, settings)
+
+    assert loop.time() - started < stream._RESOLVE_BUDGET * 1.5
+
+
+async def test_the_hold_stays_inside_what_go2rtc_allows(
+    mint: Any, settings: Settings
+) -> None:
+    """go2rtc kills a command that has not announced in thirty seconds."""
+    mint.async_get_stream_url.side_effect = MipcConnectionError("down")
+    loop = get_running_loop()
+
+    started = loop.time()
+    with pytest.raises(MipcConnectionError):
+        await stream.async_resolve(SERIAL, settings)
+
+    assert loop.time() - started < stream._RESOLVE_BUDGET * 1.5
 
 
 async def test_running_a_stream_relays_ffmpeg_and_its_exit_code(
